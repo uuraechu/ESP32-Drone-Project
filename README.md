@@ -1,20 +1,6 @@
 # ESP32-Drone-Project
 This ESP32 code for a quadcopter drone (X shape)
 
-The list of components used are:
-1. ESP32 Dev Module
-2. MPU6050 IMU
-3. BMP280 barometer
-4. Flysky FS-iA6 receiver (with FS-i6 transmitter)
-5. 3S LiPo battery
-6. 5V buck converter
-7. Voltage divider (2 resistors)
-8. ESC (x4)
-9. Brushless motors (with props) (x4)
-10. Active/passive buzzer
-11. LEDs
-12. Drone Frame
-
 ### Current Components List – ESP32 Quadcopter Project
 
 #### 1. Core Microcontroller
@@ -73,13 +59,6 @@ The list of components used are:
 - **100–220 µF electrolytic capacitor** (16 V or higher) – optional  
   Quantity: 1 pc  
   Placement: Near Flysky receiver VCC–GND
-
-#### Optional / Future Add-ons (not yet in code)
-- Extra capacitors for noise filtering
-- LED indicators (e.g., for arm status)
-- Current sensor (for power monitoring)
-- GPS module (for position hold)
-- SD card module (for blackbox logging)
 
 ### Total Estimated Component Count (Core Build)
 - 1 × ESP32 Dev Module
