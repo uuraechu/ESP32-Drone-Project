@@ -15,6 +15,87 @@ The list of components used are:
 11. LEDs
 12. Drone Frame
 
+### Current Components List – ESP32 Quadcopter Project
+
+#### 1. Core Microcontroller
+- **ESP32 Dev Module** (or ESP32-WROOM-32 DevKit)  
+  Main flight controller board that runs the code, processes sensors, PID, PWM, etc.
+
+#### 2. Sensors
+- **MPU6050** (6-axis IMU – 3-axis accelerometer + 3-axis gyroscope)  
+  Provides raw acceleration and angular velocity data for attitude estimation (roll, pitch, yaw rate)
+
+- **BMP280** (barometric pressure and temperature sensor)  
+  Used for altitude estimation via atmospheric pressure changes
+
+#### 3. Radio Control System
+- **Flysky FS-i6 Transmitter** (Mode 2, 6-channel 2.4 GHz)  
+  Pilot controller (sticks + switches)
+
+- **Flysky FS-iA6 Receiver** (6-channel PWM output)  
+  Receives signals from transmitter; outputs PWM for roll, pitch, throttle, yaw, arm, and altitude hold toggle
+
+#### 4. Power System
+- **3S LiPo Battery** (11.1 V nominal, 12.6 V full charge)  
+  Primary power source for motors/ESCs and overall system (e.g., 1300–2200 mAh, 50–75C)
+
+- **5V Buck Converter** (step-down regulator)  
+  Converts 9–12.6 V from 3S LiPo to stable 5 V  
+  Powers ESP32 VIN pin and Flysky receiver VCC
+
+- **Voltage Divider** (2 resistors)  
+  Scales battery voltage for safe ADC reading  
+  Recommended: 330 kΩ (top) + 100 kΩ (bottom) → ratio ≈ 0.233
+
+#### 5. Motor & Propulsion
+- **4 × ESCs** (Electronic Speed Controllers, 30–45 A)  
+  Control brushless motors; accept PWM from ESP32
+
+- **4 × Brushless Motors** (with propellers)  
+  Propulsion units (recommended: 2205–2306 size, 2300–2600 KV for 5-inch props on 3S)
+
+- **Propellers** (4 × 5-inch tri-blade or similar)  
+  e.g., HQProp 5x4.8x3, Gemfan 51466, etc.
+
+#### 6. Alerts & Feedback
+- **Buzzer** (active or passive piezo buzzer)  
+  Connected to GPIO 13; used for low battery, failsafe, and cutoff alerts
+
+#### 7. Power Stability Components (Capacitors)
+- **0.1 µF ceramic capacitors** (16 V or higher)  
+  Quantity: 4–6 pcs  
+  Placement: 1 near MPU6050 VCC–GND, 1 near BMP280 VCC–GND, 1 across voltage divider output–GND, extras on 5V rail
+
+- **470 µF electrolytic capacitors** (16 V or 25 V)  
+  Quantity: 1–2 pcs  
+  Placement: Across 5V buck converter output terminals (parallel with 0.1 µF ceramic)
+
+- **100–220 µF electrolytic capacitor** (16 V or higher) – optional  
+  Quantity: 1 pc  
+  Placement: Near Flysky receiver VCC–GND
+
+#### Optional / Future Add-ons (not yet in code)
+- Extra capacitors for noise filtering
+- LED indicators (e.g., for arm status)
+- Current sensor (for power monitoring)
+- GPS module (for position hold)
+- SD card module (for blackbox logging)
+
+### Total Estimated Component Count (Core Build)
+- 1 × ESP32 Dev Module
+- 1 × MPU6050
+- 1 × BMP280
+- 1 × Flysky FS-iA6 Receiver
+- 1 × Flysky FS-i6 Transmitter
+- 1 × 3S LiPo Battery
+- 1 × 5V Buck Converter
+- 2 × Resistors (for voltage divider)
+- 4 × ESCs
+- 4 × Brushless Motors + 4 × Propellers
+- 1 × Buzzer
+- 5–10 × 0.1 µF ceramic capacitors
+- 1–2 × 470 µF electrolytic capacitors
+- 1 × 100–220 µF electrolytic capacitor (optional)
 
 ### ESP32 Quadcopter Wiring Table (5V Buck Converter Setup)
 
