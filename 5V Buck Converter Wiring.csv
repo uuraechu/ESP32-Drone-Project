@@ -1,0 +1,15 @@
+Device / Rail,Connect to,Voltage,Notes
+3S LiPo (+),Buck converter VIN,9–12.6 V,After switch / fuse
+3S LiPo (–),Buck converter GND,GND,Common ground
+Buck converter VOUT,ESP32 VIN pin,5 V,Main power input
+Buck converter VOUT,Flysky receiver VCC,5 V,Receiver power
+Buck converter VOUT,"Optional 5 V devices (LEDs, telemetry, etc.)",5 V,—
+ESP32 3V3 pin,MPU6050 VCC + BMP280 VCC,3.3 V,From ESP32 onboard regulator
+ESP32 GND (any),"All GNDs (sensors, receiver, ESCs, buzzer, voltage divider)",GND,Common ground plane
+Voltage divider output,ESP32 GPIO 34 (BAT_ADC_PIN),~0–3.3 V,Scaled battery voltage
+Buzzer (+),ESP32 GPIO 13,—,Driven by code
+Buzzer (–),GND,—,—
+MPU6050 & BMP280 SDA,ESP32 GPIO 21,—,Shared I²C
+MPU6050 & BMP280 SCL,ESP32 GPIO 22,—,Shared I²C
+Receiver signal pins (CH1–CH6),"ESP32 GPIO 32,33,34,35,25,26",—,PWM inputs
+ESC signal wires,"ESP32 GPIO 25,26,27,14",—,PWM outputs
