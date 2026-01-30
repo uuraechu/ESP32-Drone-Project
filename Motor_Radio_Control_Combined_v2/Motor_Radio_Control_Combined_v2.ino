@@ -26,7 +26,7 @@
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
-#define VDIV_RATIO 0.233f // Voltage divider ratio (calibrate!)
+#define VDIV_RATIO 0.233f // Voltage divider ratio (ensure right ratio, so calibrate!)
 #define LOW_VOLT_CUTOFF 9.3f // Battery pack cutoff voltage (3.1 V/cell × 3)
 #define VOLT_WARNING 10.2f // Early low-battery warning threshold
 #define BAT_CHECK_MS 1000 // Battery check interval (ms)
