@@ -23,6 +23,11 @@
 #define BAT_ADC_PIN 34 // ADC input from battery voltage divider
 #define BUZZER_PIN 13 // Buzzer for alerts
 
+#define LED_ARMED 15 // Green LED – steady ON when armed
+#define LED_LOWBAT 2 // Red LED – blink on low battery, steady on cutoff
+#define LED_ALTHOLD 4 // Blue LED – steady ON when altitude hold active
+#define LED_FAILSAFE 16 // Yellow LED – blink on receiver failsafe
+
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
@@ -177,6 +182,17 @@ void setup() {
   writeESC(ESC4, 1000);
   delay(3500);
 
+  // LED indicators
+  pinMode(LED_ARMED, OUTPUT);
+  pinMode(LED_LOWBAT, OUTPUT);
+  pinMode(LED_ALTHOLD, OUTPUT);
+  pinMode(LED_FAILSAFE, OUTPUT);
+
+  digitalWrite(LED_ARMED, LOW);
+  digitalWrite(LED_LOWBAT, LOW);
+  digitalWrite(LED_ALTHOLD, LOW);
+  digitalWrite(LED_FAILSAFE, LOW);
+
   // PID configuration
   pidRoll.SetMode(AUTOMATIC); pidRoll.SetOutputLimits(-250, 250);
   pidPitch.SetMode(AUTOMATIC); pidPitch.SetOutputLimits(-250, 250);
@@ -274,6 +290,7 @@ void loop() {
   mixAndWriteMotors();
 
   debugOutput();
+  updateLEDs();  // Update status LEDs
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -474,6 +491,12 @@ void stopMotors() {
   writeESC(ESC3, 1000);
   writeESC(ESC4, 1000);
   noTone(BUZZER_PIN);
+
+  // Turn off all status LEDs
+  digitalWrite(LED_ARMED, LOW);
+  digitalWrite(LED_LOWBAT, LOW);
+  digitalWrite(LED_ALTHOLD, LOW);
+  digitalWrite(LED_FAILSAFE, LOW);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -499,6 +522,41 @@ void buzzerAlert(int count, int duration_ms) {
 
 void buzzerAlertContinuous() {
   tone(BUZZER_PIN, 800);
+}
+
+// ────────────────────────────────────────────────────────────────
+// Update optional LED indicators (non-blocking)
+// ────────────────────────────────────────────────────────────────
+void updateLEDs() {
+  // Armed status: steady green
+  digitalWrite(LED_ARMED, armed ? HIGH : LOW);
+
+  // Altitude hold active: steady blue
+  digitalWrite(LED_ALTHOLD, altitudeHoldEnabled ? HIGH : LOW);
+
+  // Receiver failsafe: fast yellow blink
+  static unsigned long lastFailsafeBlink = 0;
+  if (receiverFailsafeActive) {
+    if (millis() - lastFailsafeBlink > 150) {  // Blink every 150 ms
+      digitalWrite(LED_FAILSAFE, !digitalRead(LED_FAILSAFE));
+      lastFailsafeBlink = millis();
+    }
+  } else {
+    digitalWrite(LED_FAILSAFE, LOW);
+  }
+
+  // Low battery warning: fast red blink (warning) or steady red (cutoff)
+  static unsigned long lastLowBatBlink = 0;
+  if (vbat < LOW_VOLT_CUTOFF) {
+    digitalWrite(LED_LOWBAT, HIGH);  // Steady ON on critical cutoff
+  } else if (vbat < VOLT_WARNING) {
+    if (millis() - lastLowBatBlink > 200) {  // Blink every 200 ms
+      digitalWrite(LED_LOWBAT, !digitalRead(LED_LOWBAT));
+      lastLowBatBlink = millis();
+    }
+  } else {
+    digitalWrite(LED_LOWBAT, LOW);
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
