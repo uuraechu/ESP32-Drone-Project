@@ -45,3 +45,4 @@ All sensors use 3.3V logic. The 5V buck converter powers ESP32 VIN and receiver 
 
 For full project details → [README.md](README.md)  
 For complete component list → [COMPONENTS.md](COMPONENTS.md)
+For troubleshooting → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)

@@ -76,3 +76,7 @@ This document lists common issues, symptoms, causes, and step-by-step fixes for 
 - **Still stuck?** Paste your Serial output here or in issues for help.
 
 Most problems are wiring, noise, calibration, or ESC protocol related.
+
+For full project details → [README.md](README.md)  
+For wiring → [WIRING.md](WIRING.md)  
+For components → [COMPONENTS.md](COMPONENTS.md)
