@@ -369,7 +369,7 @@ void updateArmingAndHoldMode() {
   if (currentPwmAux > 1800 && rcThrottle < 1100) {
     armed = true;
     if (altitudeHoldEnabled) altSetpoint = height;
-    noTone(BUZZER_PIN);  // Stop any continuous tone on re-arm
+    noTone(BUZZER_PIN); // Stop any continuous tone on re-arm
   }
   if (currentPwmAux < 1200 || rcThrottle < 1050) {
     armed = false;
