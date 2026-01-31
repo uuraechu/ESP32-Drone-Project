@@ -37,6 +37,21 @@ All sensors use 3.3V logic. The 5V buck converter powers ESP32 VIN and receiver 
 | **Buzzer**                 | Positive                   | ESP32 **GPIO 13**            | Driven by code for alerts                                                       | —                                    |
 | Buzzer                     | Negative                   | ESP32 **GND**                | Ground                                                                          | —                                    |
 
+### Optional LED Indicators (Visual Status Feedback)
+
+| LED Color  | Purpose                     | LED + Leg (Anode) → ESP32 Pin | LED – Leg (Cathode) → Resistor → GND | Resistor Value | Notes / Behavior |
+|------------|-----------------------------|-------------------------------|---------------------------------------|----------------|------------------|
+| Green      | Armed status                | GPIO 15                       | 220–330 Ω → GND                      | 220–330 Ω      | Steady ON when armed |
+| Red        | Low battery warning         | GPIO 2                        | 220–330 Ω → GND                      | 220–330 Ω      | Fast blink when vbat < VOLT_WARNING; steady ON on cutoff |
+| Blue       | Altitude hold active        | GPIO 4                        | 220–330 Ω → GND                      | 220–330 Ω      | Steady ON when altitudeHoldEnabled |
+| Yellow     | Receiver failsafe           | GPIO 16                       | 220–330 Ω → GND                      | 220–330 Ω      | Fast blink when failsafe active |
+
+**Notes on LEDs**:
+- Optional but highly recommended for visual debugging.
+- Use 220–330 Ω current-limiting resistors (1/4 W) for each LED.
+- LEDs are low-power (~5–20 mA each) and safe for ESP32 pins.
+- Behavior is controlled in code (steady or blinking patterns).
+
 ### Additional Notes
 - All sensor signals (MPU6050 & BMP280) are 3.3 V logic → powered from ESP32 **3V3** pin.
 - Shared I²C bus: Both sensors connect to **GPIO 21 (SDA)** and **GPIO 22 (SCL)**.
