@@ -54,5 +54,5 @@ All sensors use 3.3V logic. 5V buck powers ESP32 VIN and receiver. ESP32 3V3 pow
 - Place capacitors as close as possible to pins
 
 For full project → [README.md](README.md)  
-For components → [COMPONENTS.md](COMPONENTS.md)
+For components → [COMPONENTS.md](COMPONENTS.md)  
 For troubleshooting → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
