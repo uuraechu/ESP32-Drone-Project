@@ -1,81 +1,75 @@
 # ESP32 Quadcopter – Troubleshooting Guide
 
-This document lists common issues, symptoms, causes, and step-by-step fixes for building, calibrating, and flying the quadcopter.
+Common issues, symptoms, causes and fixes for this project.
 
-## 1. Sensors Not Detected ("Failed to find MPU6050" or "BMP280")
-**Symptoms**: Serial Monitor shows failure messages during `setup()`.
+## 1. No WiFi AP ("QuadTelemetry") appears
+**Symptoms**: No network to connect to after power-on.
 
-**Common Causes & Fixes**:
-- **Wiring swapped**: Swap SDA (GPIO 21) and SCL (GPIO 22) wires — very common mistake.
-- **Power wrong**: Sensors must be on **3V3** pin (not 5V from buck). Check voltage with multimeter.
-- **No pull-ups**: Add 4.7 kΩ resistors from SDA/SCL to 3.3V if your breakout boards lack them.
-- **Address conflict**: MPU6050 AD0 pin should be GND (0x68). BMP280 SDO pin should be GND (0x76).
-- **I²C noise**: Add 0.1 µF ceramic capacitor across VCC–GND on each sensor.
-- **Fix**: Run an I²C scanner sketch to confirm addresses appear on bus.
+**Causes & Fixes**:
+- WiFi init failed → Check `initHTTPTelemetry()` ran (Serial prints IP)
+- ESP32 in deep sleep or brownout → Add 1000 µF electrolytic on 5V rail
+- Code crash before WiFi.start → Look for earlier errors in Serial
+- Fix: Re-upload sketch, watch Serial for "WiFi AP started" message
 
-## 2. Noisy / Jumping Altitude Readings
-**Symptoms**: `height` value fluctuates wildly even when quad is still.
+## 2. Browser can't connect to 192.168.4.1
+**Symptoms**: Page doesn't load or "connection refused"
 
-**Common Causes & Fixes**:
-- **Vibration**: Mount BMP280 with foam tape or soft mounting to isolate from motor vibes.
-- **Power noise**: Add 0.1 µF ceramic cap right next to BMP280 VCC–GND pins.
-- **Filter tuning**: Reduce `alpha` in `fuseAltitude()` (e.g., from 0.98 → 0.92–0.95) to trust baro more.
-- **Bad baro offset**: Power cycle while flat/still — recalibrate `baroOffset`.
-- **Fix**: Print raw `baroAlt` vs fused `height` in debug to isolate the issue.
+**Causes & Fixes**:
+- Not connected to QuadTelemetry WiFi → Connect phone/laptop to it first
+- Wrong IP → Check Serial Monitor for correct IP (usually 192.168.4.1)
+- Firewall or VPN blocking → Disable VPN, try different device
+- Server not running → Ensure `server.handleClient()` is called in loop()
 
-## 3. Random Disarms or ESP32 Resets
-**Symptoms**: Quad disarms mid-test or ESP32 reboots unexpectedly.
+## 3. Telemetry data not updating / stuck
+**Symptoms**: JSON shows old values or "Loading..." forever
 
-**Common Causes & Fixes**:
-- **Brownout (voltage dip)**: Add 470 µF electrolytic + 0.1 µF ceramic at 5V buck output.
-- **Receiver signal loss**: Check antenna placement; increase `FAILSAFE_TIMEOUT_MS` if false triggers.
-- **Low battery false positive**: Recalibrate `VDIV_RATIO` with multimeter at full charge.
-- **Overcurrent**: Confirm motors/ESCs not drawing >30A continuous per motor.
-- **Fix**: Watch Serial for "LOW VOLTAGE CUTOFF" or "FAILSAFE" messages.
+**Causes & Fixes**:
+- ESP32 overloaded → Reduce `delay()` in loop or increase update interval
+- Browser cache → Hard refresh (Ctrl+F5)
+- WiFi interference → Move to open area or change AP channel in code
+- Fix: Open `/data` directly in browser → should return JSON instantly
 
-## 4. Motors Not Spinning After Arming
-**Symptoms**: Armed (no failsafe), but motors stay at 1000 µs.
+## 4. Receiver channels not responding
+**Symptoms**: PWM values stuck at 0 or random
 
-**Common Causes & Fixes**:
-- **ESC not calibrated**: Power ESCs with throttle high → wait for beeps → lower throttle to arm.
-- **PWM signal wrong**: Confirm 50 Hz in code matches ESC protocol (most accept it).
-- **Throttle too low**: Ensure `rcThrottle` >1100 µs when arming.
-- **Fix**: Print `throttle` value in `mixAndWriteMotors()` to verify.
+**Causes & Fixes**:
+- Not bound → Hold bind button on receiver, power on transmitter in bind mode
+- Wrong pins → Confirm CH1–CH6 on GPIO 32,33,34,35,25,26
+- Power issue → Receiver VCC must be 4.8–6 V (use 5V buck, not 3V3 if unstable)
+- Noise → Add 0.1 µF ceramic across receiver VCC–GND
 
-## 5. Altitude Hold Unstable (climbs/descends or oscillates)
-**Symptoms**: Drone drifts up/down or bounces in hold mode.
+## 5. Voltage reading inaccurate / noisy
+**Symptoms**: VBat doesn't match multimeter or jumps around
 
-**Common Causes & Fixes**:
-- **PID gains wrong**: Reduce `pidAlt` Kp/Kd first (start low), then tune Ki slowly.
-- **Baro noise/vibration**: Add capacitor + soft mount BMP280.
-- **Accel Z not compensated**: Check `accelOffsetZ` from calibration (should be near -9.81).
-- **Fix**: Test manual throttle first — ensure `height` is stable near 0 after calibration.
+**Causes & Fixes**:
+- Wrong calibration → Use multimeter at 2–3 points (full, half, low) → recalculate VDIV_M & VDIV_C
+- High source impedance → Lower resistors (e.g. 33 kΩ + 10 kΩ) or add op-amp buffer
+- ADC noise → Add 0.1 µF ceramic from GPIO 36 to GND
+- Fix: Average more samples (e.g. 64 instead of 16)
 
-## 6. Receiver Input Not Working
-**Symptoms**: `rcRoll`, `rcPitch`, etc. stuck at 0 or wrong values.
+## 6. LEDs not responding to switches
+**Symptoms**: Green/Blue LEDs don't change with CH5/CH6
 
-**Common Causes & Fixes**:
-- **Wrong pins**: Confirm GPIO 32–35,25,26 match CH1–CH6 on receiver.
-- **Not bound**: Hold bind button on receiver, power on transmitter with bind switch.
-- **PulseIn timeout**: Increase timeout value (30000 µs) or use interrupt-based reading.
-- **Fix**: Print raw PWM values in `readReceiver()` to debug.
+**Causes & Fixes**:
+- Wrong pin → Confirm Green = 15, Blue = 4
+- PWM values wrong → Check Serial for pwmArm/pwmAux (should be ~1000–2000 µs)
+- Threshold wrong → Adjust >1500 logic if your transmitter mid-point is not 1500 µs
+- Fix: Print pwmArm and pwmAux in loop() to verify
 
-## 7. Buzzer Not Working or Constant Tone
-**Symptoms**: No sound or tone never stops.
+## 7. Buzzer not sounding
+**Symptoms**: No beeps on startup or confirmation
 
-**Common Causes & Fixes**:
-- **Wrong pin**: Confirm buzzer + is on GPIO 13.
-- **Passive vs active**: Active buzzers just need HIGH/LOW; passive need `tone()`.
-- **Tone stuck**: `noTone(BUZZER_PIN)` called on re-arm or disarm.
-- **Fix**: Test buzzer with simple `tone(BUZZER_PIN, 1000, 500);` in `setup()`.
+**Causes & Fixes**:
+- Wrong pin → Confirm BUZZER_PIN = 13
+- Passive vs active buzzer → Active buzzers need only HIGH/LOW; passive need tone()
+- Polarity reversed → Swap buzzer legs
+- Fix: Test with `tone(BUZZER_PIN, 1000, 500);` in setup()
 
 ## General Tips
-- **Breadboard noise**: Use short wires, solid ground rail, and add ceramics ASAP.
-- **No props first**: Always bench-test arming, sensors, and buzzer without props.
-- **Serial Monitor**: Keep it open (115200 baud) — most errors print there.
-- **Still stuck?** Paste your Serial output here or in issues for help.
-
-Most problems are wiring, noise, calibration, or ESC protocol related.
+- Always test **without props** first
+- Keep Serial Monitor open — most errors print there
+- Breadboard noise → Short wires, solid ground rail, add ceramics
+- Still stuck? Paste Serial output here for help
 
 For full project details → [README.md](README.md)  
 For wiring → [WIRING.md](WIRING.md)  
