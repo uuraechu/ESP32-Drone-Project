@@ -31,7 +31,8 @@
 // ────────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ────────────────────────────────────────────────────────────────
-#define VDIV_RATIO 0.233f // Voltage divider ratio (calibrate!)
+#define VDIV_M  3.672f // Voltage divider slope (calibrate!)
+#define VDIV_C  1.974f // Voltage divider intercept (calibrate!)
 #define LOW_VOLT_CUTOFF 9.3f // Battery pack cutoff voltage (3.1 V/cell × 3)
 #define VOLT_WARNING 10.2f // Early low-battery warning threshold
 #define BAT_CHECK_MS 1000 // Battery check interval (ms)
@@ -350,7 +351,7 @@ void checkBatteryVoltage() {
   }
   float adc_avg = sum / (float)samples;
   float v_divided = (adc_avg / 4095.0f) * 3.3f;
-  vbat = v_divided / VDIV_RATIO;
+  vbat = (v_divided * VDIV_M) + VDIV_C;
 
   if (vbat < LOW_VOLT_CUTOFF && armed) {
     armed = false;
