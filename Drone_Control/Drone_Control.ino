@@ -20,7 +20,7 @@
 #define CH_ARM 25 // Flysky Channel 5 – Arm/disarm switch
 #define CH_AUX 26 // Flysky Channel 6 – Altitude hold toggle
 
-#define BAT_ADC_PIN 34 // ADC input from battery voltage divider
+#define BAT_ADC_PIN 36 // ADC input from battery voltage divider
 #define BUZZER_PIN 13 // Buzzer for alerts
 
 #define LED_ARMED 15 // Green LED – steady ON when armed
