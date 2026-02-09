@@ -8,7 +8,7 @@
 #include <WebServer.h>
 
 // ────────────────────────────────────────────────────────────────
-//  PIN DEFINITIONS
+// PIN DEFINITIONS
 // ────────────────────────────────────────────────────────────────
 #define ESC1 25 // Front-left motor (X configuration)
 #define ESC2 26 // Front-right motor
@@ -31,7 +31,7 @@
 #define LED_FAILSAFE 16 // Yellow – Receiver failsafe
 
 // ────────────────────────────────────────────────────────────────
-//  CONSTANTS
+// CONSTANTS
 // ────────────────────────────────────────────────────────────────
 #define VDIV_M 3.672f
 #define VDIV_C 1.974f
@@ -43,14 +43,14 @@
 #define FAILSAFE_MIN_PULSE 800
 
 const float alpha = 0.98f;
-const float GYRO_SCALE = (180.0f / M_PI);  // rad/s → deg/s
+const float GYRO_SCALE = (180.0f / M_PI); // rad/s → deg/s
 
 // WiFi AP settings
 const char* apSSID = "QuadTelemetry";
 const char* apPassword = "flysafe123";
 
 // ────────────────────────────────────────────────────────────────
-//  GLOBAL STATE VARIABLES
+// GLOBAL STATE VARIABLES
 // ────────────────────────────────────────────────────────────────
 Adafruit_MPU6050 mpu;
 Adafruit_BMP280 bmp;
@@ -66,6 +66,7 @@ PID pidRoll(&rollInput, &rollOutput, &rollSetpoint, 4.0, 0.05, 1.0, DIRECT);
 PID pidPitch(&pitchInput, &pitchOutput, &pitchSetpoint, 4.0, 0.05, 1.0, DIRECT);
 PID pidYawRate(&yawRateInput, &yawRateOutput, &yawRateSetpoint, 5.0, 0.03, 0.2, DIRECT);
 PID pidAlt(&altInput, &altOutput, &altSetpoint, 2.5, 0.2, 1.2, DIRECT);
+double originalAltKi = 0;
 
 float gyroOffsetX = 0, gyroOffsetY = 0, gyroOffsetZ = 0;
 float accelOffsetX = 0, accelOffsetY = 0, accelOffsetZ = 0;
@@ -90,8 +91,11 @@ int currentPwmAux = 0;
 
 float m1, m2, m3, m4;
 
+// Global dt (updated every loop iteration)
+float global_dt = 0.0f;
+
 // ────────────────────────────────────────────────────────────────
-//  SETUP – One-time initialization
+// SETUP
 // ────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
@@ -116,6 +120,7 @@ void setup() {
   delay(2000);
 
   lastValidSignalTime = millis();
+  prevTime = millis(); // Initialize dt reference
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -123,16 +128,17 @@ void setup() {
 // ────────────────────────────────────────────────────────────────
 void loop() {
   unsigned long now = millis();
-  float dt = (now - prevTime) / 1000.0f;
-  if (dt < 0.005f) return;
+  global_dt = (now - prevTime) / 1000.0f;
+  if (global_dt < 0.005f) return;
   prevTime = now;
 
   readReceiver();
   checkReceiverFailsafe();
   updateArmingAndHoldMode();
   checkBatteryVoltage();
+
   updateLEDs();
-  server.handleClient(); // Process HTTP requests
+  server.handleClient(); // Update telemetry
 
   if (!armed) {
     stopMotors();
@@ -141,8 +147,8 @@ void loop() {
   }
 
   readSensors();
-  fuseAttitude(dt);
-  fuseAltitude(dt);
+  fuseAttitude(global_dt);
+  fuseAltitude(global_dt);
   runPIDs();
   mixAndWriteMotors();
 
@@ -155,6 +161,7 @@ void loop() {
 void initPins() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
+  Serial.println("Buzzer initialized.");
 
   pinMode(LED_ARMED, OUTPUT);
   pinMode(LED_LOWBAT, OUTPUT);
@@ -164,6 +171,7 @@ void initPins() {
   digitalWrite(LED_LOWBAT, LOW);
   digitalWrite(LED_ALTHOLD, LOW);
   digitalWrite(LED_FAILSAFE, LOW);
+  Serial.println("LEDs initialized.");
 
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
@@ -188,16 +196,6 @@ void initSensors() {
                   Adafruit_BMP280::SAMPLING_X16,
                   Adafruit_BMP280::FILTER_X16,
                   Adafruit_BMP280::STANDBY_MS_500);
-}
-
-void calibrateAllSensors() {
-  Serial.println("Calibrating sensors...");
-  calibrateMPU650(); // Gyro + Accel
-  calibrateBarometer(); // Baro
-  Serial.println("Calibration complete.");
-  Serial.printf("Gyro offsets: X=%.3f Y=%.3f Z=%.3f deg/s\n", gyroOffsetX, gyroOffsetY, gyroOffsetZ);
-  Serial.printf("Accel offsets: X=%.3f Y=%.3f Z=%.3f m/s²\n", accelOffsetX, accelOffsetY, accelOffsetZ);
-  Serial.printf("Baro offset: %.2f m\n", baroOffset);
 }
 
 void initReceiver() {
@@ -230,12 +228,38 @@ void initPIDs() {
   pidPitch.SetMode(AUTOMATIC); pidPitch.SetOutputLimits(-250, 250);
   pidYawRate.SetMode(AUTOMATIC); pidYawRate.SetOutputLimits(-180, 180);
   pidAlt.SetMode(AUTOMATIC); pidAlt.SetOutputLimits(-300, 400);
+  originalAltKi = pidAlt.GetKi();
+}
+
+void initHTTPTelemetry() {
+  WiFi.softAP(apSSID, apPassword);
+  IPAddress IP = WiFi.softAPIP();
+
+  Serial.println("WiFi AP started");
+  Serial.print("SSID: "); Serial.println(apSSID);
+  Serial.print("Password: "); Serial.println(apPassword);
+  Serial.print("Open browser at: http://"); Serial.println(IP);
+
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.begin();
+  Serial.println("HTTP telemetry server started.");
+}
+
+void calibrateAllSensors() {
+  Serial.println("Calibrating sensors...");
+  calibrateMPU6050(); // Gyro + Accel
+  calibrateBarometer(); // Baro
+  Serial.println("Calibration complete.");
+  Serial.printf("Gyro offsets: X=%.3f Y=%.3f Z=%.3f deg/s\n", gyroOffsetX, gyroOffsetY, gyroOffsetZ);
+  Serial.printf("Accel offsets: X=%.3f Y=%.3f Z=%.3f m/s²\n", accelOffsetX, accelOffsetY, accelOffsetZ);
+  Serial.printf("Baro offset: %.2f m\n", baroOffset);
 }
 
 // ────────────────────────────────────────────────────────────────
 // CALIBRATION FUNCTIONS
 // ────────────────────────────────────────────────────────────────
-void calibrateMPU650() {
+void calibrateMPU6050() {
   const int numSamples = 200;
   float sumGx = 0, sumGy = 0, sumGz = 0;
   float sumAx = 0, sumAy = 0, sumAz = 0;
@@ -288,7 +312,7 @@ void calibrateBarometer() {
 }
 
 // ────────────────────────────────────────────────────────────────
-// SENSOR & INPUT FUNCTIONS
+// CORE FLIGHT FUNCTIONS
 // ────────────────────────────────────────────────────────────────
 void readReceiver() {
   int pwmRoll = pulseIn(CH_ROLL, HIGH, 30000);
@@ -373,36 +397,58 @@ void checkBatteryVoltage() {
 }
 
 void updateArmingAndHoldMode() {
-  bool newHoldMode = (currentPwmAux > 1500);
+  // Read separate channels (CH5 = Arm switch, CH6 = Aux/Altitude hold switch)
+  unsigned long pwmArm = pulseIn(CH_ARM, HIGH, 30000);
+  unsigned long pwmAux = pulseIn(CH_AUX, HIGH, 30000);
 
-  if (newHoldMode != altitudeHoldEnabled) {
-    double savedKi = pidAlt.GetKi();
-    pidAlt.SetTunings(pidAlt.GetKp(), 0.0, pidAlt.GetKd());
-    pidAlt.Compute();
-    pidAlt.SetTunings(pidAlt.GetKp(), savedKi, pidAlt.GetKd());
+  // Altitude hold toggle (CH6 – independent of arming)
+  bool auxHigh = (pwmAux > 1500);
 
-    if (newHoldMode) altSetpoint = height;
-    altitudeHoldEnabled = newHoldMode;
+  if (auxHigh != altitudeHoldEnabled) {
+    if (auxHigh) {
+      // Enabling altitude hold → reset integral and set current height as target
+      pidAlt.SetTunings(pidAlt.GetKp(), 0.0, pidAlt.GetKd());
+      altSetpoint = height;
+      Serial.println("Altitude hold ENABLED");
+      tone(BUZZER_PIN, 1400, 200); // Short confirmation beep
+    } else {
+      // Disabling hold → restore full integral term
+      pidAlt.SetTunings(pidAlt.GetKp(), originalAltKi, pidAlt.GetKd());
+      Serial.println("Altitude hold DISABLED - integral restored");
+    }
+    altitudeHoldEnabled = auxHigh;
   }
 
-  if (currentPwmAux > 1800 && rcThrottle < 1100) {
+  // Arming logic (CH5 – 2-position switch with throttle safety)
+  bool armSwitchHigh = (pwmArm > 1500); // Arm switch high = request arm
+  bool throttleSafe = (rcThrottle < 1100); // Throttle must be low to allow arming
+
+  bool shouldArm = armSwitchHigh && throttleSafe;
+  bool shouldDisarm = !armSwitchHigh && armed;; // ONLY disarm when arm switch is turned OFF
+
+  // Arm transition
+  if (shouldArm && !armed) {
     armed = true;
-    if (altitudeHoldEnabled) altSetpoint = height;
-    noTone(BUZZER_PIN);
+    Serial.println("ARMED - Motors active");
+    tone(BUZZER_PIN, 1200, 300); // Confirmation beep on arm
   }
 
-  if (currentPwmAux < 1200 || rcThrottle < 1050) {
+  // Disarm transition
+  if (shouldDisarm && armed) {
     armed = false;
-    altitudeHoldEnabled = false;
+    altitudeHoldEnabled = false; // Force disable hold on disarm (safety)
+    stopMotors();
+    Serial.println("DISARMED - Motors stopped");
+    tone(BUZZER_PIN, 600, 500); // Longer tone on disarm
   }
 }
 
 void fuseAttitude(float dt) {
   float accelPitch = atan2(accelX, sqrt(accelY*accelY + accelZ*accelZ)) * GYRO_SCALE;
-  float accelRoll  = atan2(-accelY, accelZ) * GYRO_SCALE;
+  float accelRoll = atan2(-accelY, accelZ) * GYRO_SCALE;
 
   pitch = alpha * (pitch + gyroPitchRate * dt) + (1.0f - alpha) * accelPitch;
-  roll  = alpha * (roll  + gyroRollRate  * dt) + (1.0f - alpha) * accelRoll;
+  roll = alpha * (roll + gyroRollRate * dt) + (1.0f - alpha) * accelRoll;
 }
 
 void fuseAltitude(float dt) {
@@ -414,14 +460,14 @@ void fuseAltitude(float dt) {
   float zAccel = (accelZ * cr * cp - accelY * sr - accelX * sp) - 9.81f;
 
   velocity = 0.92f * (velocity + zAccel * dt) + 0.08f * ((baroAlt - height) / dt);
-  height   = 0.92f * (height + velocity * dt)   + 0.08f * baroAlt;
+  height = 0.92f * (height + velocity * dt) + 0.08f * baroAlt;
 }
 
 void runPIDs() {
-  rollInput     = roll;
-  pitchInput    = pitch;
-  yawRateInput  = yawRate;
-  altInput      = height;
+  rollInput = roll;
+  pitchInput = pitch;
+  yawRateInput = yawRate;
+  altInput = height;
 
   pidRoll.Compute();
   pidPitch.Compute();
@@ -531,21 +577,74 @@ void debugOutput() {
 // ────────────────────────────────────────────────────────────────
 // HTTP TELEMETRY SERVER
 // ────────────────────────────────────────────────────────────────
-void initHTTPTelemetry() {
-  WiFi.softAP(apSSID, apPassword);
-  IPAddress IP = WiFi.softAPIP();
+void handleData() {
+  // Re-read latest sensor data for freshness
+  readSensors();
 
-  Serial.println("WiFi AP started");
-  Serial.print("SSID: "); Serial.println(apSSID);
-  Serial.print("Password: "); Serial.println(apPassword);
-  Serial.print("Open browser at: http://"); Serial.println(IP);
+  // Rotational acceleration (smoothed derivative using global_dt)
+  static float prevRollRate = 0, prevPitchRate = 0, prevYawRate = 0;
+  static float rotAccRoll = 0, rotAccPitch = 0, rotAccYaw = 0;
+  if (global_dt > 0.001f) {  // Prevent division by zero
+    rotAccRoll = 0.7f * rotAccRoll + 0.3f * ((gyroRollRate - prevRollRate) / global_dt);
+    rotAccPitch = 0.7f * rotAccPitch + 0.3f * ((gyroPitchRate - prevPitchRate) / global_dt);
+    rotAccYaw = 0.7f * rotAccYaw + 0.3f * ((yawRate - prevYawRate) / global_dt);
+  }
+  prevRollRate = gyroRollRate;
+  prevPitchRate = gyroPitchRate;
+  prevYawRate = yawRate;
 
-  server.on("/", handleRoot);
-  server.on("/data", handleData);
-  server.begin();
-  Serial.println("HTTP telemetry server started.");
+  // Build comprehensive JSON
+  String json = "{";
+  json += "\"timestamp\":" + String(millis()) + ",";
+
+  // Receiver channels (raw PWM)
+  json += "\"rcRoll\":" + String(pulseIn(CH_ROLL, HIGH, 30000)) + ",";
+  json += "\"rcPitch\":" + String(pulseIn(CH_PITCH, HIGH, 30000)) + ",";
+  json += "\"rcThrottle\":" + String(pulseIn(CH_THROTTLE, HIGH, 30000)) + ",";
+  json += "\"rcYaw\":" + String(pulseIn(CH_YAW, HIGH, 30000)) + ",";
+  json += "\"rcArm\":" + String(pulseIn(CH_ARM, HIGH, 30000)) + ",";
+  json += "\"rcAux\":" + String(pulseIn(CH_AUX, HIGH, 30000)) + ",";
+
+  // Attitude & rates
+  json += "\"roll\":" + String(roll, 2) + ",";
+  json += "\"pitch\":" + String(pitch, 2) + ",";
+  json += "\"yawRate\":" + String(yawRate, 2) + ",";
+
+  // Altitude & velocity
+  json += "\"height\":" + String(height, 2) + ",";
+  json += "\"velocity\":" + String(velocity, 2) + ",";
+
+  // Acceleration (m/s²)
+  json += "\"accelX\":" + String(accelX, 2) + ",";
+  json += "\"accelY\":" + String(accelY, 2) + ",";
+  json += "\"accelZ\":" + String(accelZ, 2) + ",";
+
+  // Rotational velocity (gyro rates deg/s)
+  json += "\"rotVelRoll\":" + String(gyroRollRate, 2) + ",";
+  json += "\"rotVelPitch\":" + String(gyroPitchRate, 2) + ",";
+  json += "\"rotVelYaw\":" + String(yawRate, 2) + ",";
+
+  // Rotational acceleration (deg/s², smoothed using global_dt)
+  json += "\"rotAccRoll\":" + String(rotAccRoll, 2) + ",";
+  json += "\"rotAccPitch\":" + String(rotAccPitch, 2) + ",";
+  json += "\"rotAccYaw\":" + String(rotAccYaw, 2) + ",";
+
+  // Temperature from BMP280
+  json += "\"temperature\":" + String(bmp.readTemperature(), 2) + ",";
+
+  // Flight state
+  json += "\"vbat\":" + String(vbat, 2) + ",";
+  json += "\"armed\":" + String(armed ? "true" : "false") + ",";
+  json += "\"altitudeHoldEnabled\":" + String(altitudeHoldEnabled ? "true" : "false");
+
+  json += "}";
+
+  server.send(200, "application/json", json);
 }
 
+// ────────────────────────────────────────────────────────────────
+// HTTP TELEMETRY SERVER – Root page
+// ────────────────────────────────────────────────────────────────
 void handleRoot() {
   String html = R"rawliteral(
 <!DOCTYPE html>
@@ -578,18 +677,4 @@ void handleRoot() {
 )rawliteral";
 
   server.send(200, "text/html", html);
-}
-
-void handleData() {
-  String json = "{";
-  json += "\"roll\":" + String(roll, 2) + ",";
-  json += "\"pitch\":" + String(pitch, 2) + ",";
-  json += "\"yawRate\":" + String(yawRate, 2) + ",";
-  json += "\"height\":" + String(height, 2) + ",";
-  json += "\"vbat\":" + String(vbat, 2) + ",";
-  json += "\"armed\":" + String(armed ? "true" : "false") + ",";
-  json += "\"altitudeHoldEnabled\":" + String(altitudeHoldEnabled ? "true" : "false");
-  json += "}";
-
-  server.send(200, "application/json", json);
 }
