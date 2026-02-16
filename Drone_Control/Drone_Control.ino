@@ -62,8 +62,8 @@ double yawRateSetpoint = 0, yawRateInput, yawRateOutput;
 double altSetpoint = 0.5;
 double altInput, altOutput;
 
-PID pidRoll(&rollInput, &rollOutput, &rollSetpoint, 4.0, 0.05, 1.0, DIRECT);
-PID pidPitch(&pitchInput, &pitchOutput, &pitchSetpoint, 4.0, 0.05, 1.0, DIRECT);
+PID pidRoll(&rollInput, &rollOutput, &rollSetpoint, 2.0, 0.05, 1.0, DIRECT);
+PID pidPitch(&pitchInput, &pitchOutput, &pitchSetpoint, 2.0, 0.05, 1.0, DIRECT);
 PID pidYawRate(&yawRateInput, &yawRateOutput, &yawRateSetpoint, 5.0, 0.03, 0.2, DIRECT);
 PID pidAlt(&altInput, &altOutput, &altSetpoint, 2.5, 0.2, 1.2, DIRECT);
 double originalAltKi = 0;
