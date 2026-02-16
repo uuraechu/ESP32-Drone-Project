@@ -10,10 +10,10 @@
 // ────────────────────────────────────────────────────────────────
 // PIN DEFINITIONS
 // ────────────────────────────────────────────────────────────────
-#define ESC1 12 // Front-left motor (X configuration)
-#define ESC2 19 // Front-right motor
-#define ESC3 27 // Rear-right motor
-#define ESC4 14 // Rear-left motor
+#define ESC1 12 // Front-left motor (X configuration) (CW)
+#define ESC2 19 // Front-right motor (CCW)
+#define ESC3 27 // Rear-right motor (CW)
+#define ESC4 14 // Rear-left motor (CCW)
 
 #define CH_ROLL 32
 #define CH_PITCH 33
@@ -493,10 +493,10 @@ void mixAndWriteMotors() {
     throttle = constrain(throttle, 1000, 1800);
   }
 
-  m1 = throttle - rollOutput + pitchOutput - yawRateOutput;
-  m2 = throttle + rollOutput + pitchOutput + yawRateOutput;
-  m3 = throttle + rollOutput - pitchOutput - yawRateOutput;
-  m4 = throttle - rollOutput - pitchOutput + yawRateOutput;
+  m1 = throttle + rollOutput + pitchOutput - yawRateOutput;
+  m2 = throttle - rollOutput + pitchOutput + yawRateOutput;
+  m3 = throttle - rollOutput - pitchOutput - yawRateOutput;
+  m4 = throttle + rollOutput - pitchOutput + yawRateOutput;
 
   m1 = constrain(m1, 1000, 2000);
   m2 = constrain(m2, 1000, 2000);
