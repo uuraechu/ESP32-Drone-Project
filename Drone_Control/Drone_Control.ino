@@ -10,8 +10,8 @@
 // ────────────────────────────────────────────────────────────────
 // PIN DEFINITIONS
 // ────────────────────────────────────────────────────────────────
-#define ESC1 25 // Front-left motor (X configuration)
-#define ESC2 26 // Front-right motor
+#define ESC1 12 // Front-left motor (X configuration)
+#define ESC2 19 // Front-right motor
 #define ESC3 27 // Rear-right motor
 #define ESC4 14 // Rear-left motor
 
@@ -86,6 +86,8 @@ bool armed = false;
 bool altitudeHoldEnabled = false;
 bool receiverFailsafeActive = false;
 
+int pwmRoll = 0, pwmPitch = 0, pwmThrottle = 0;
+int pwmYaw = 0, pwmArm = 0, pwmAux = 0;
 float rcRoll = 0, rcPitch = 0, rcYawRate = 0, rcThrottle = 0;
 int currentPwmAux = 0;
 
@@ -161,7 +163,6 @@ void loop() {
 void initPins() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  Serial.println("Buzzer initialized.");
 
   pinMode(LED_ARMED, OUTPUT);
   pinMode(LED_LOWBAT, OUTPUT);
@@ -171,7 +172,6 @@ void initPins() {
   digitalWrite(LED_LOWBAT, LOW);
   digitalWrite(LED_ALTHOLD, LOW);
   digitalWrite(LED_FAILSAFE, LOW);
-  Serial.println("LEDs initialized.");
 
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
@@ -315,12 +315,12 @@ void calibrateBarometer() {
 // CORE FLIGHT FUNCTIONS
 // ────────────────────────────────────────────────────────────────
 void readReceiver() {
-  int pwmRoll = pulseIn(CH_ROLL, HIGH, 30000);
-  int pwmPitch = pulseIn(CH_PITCH, HIGH, 30000);
-  int pwmThrottle = pulseIn(CH_THROTTLE, HIGH, 30000);
-  int pwmYaw = pulseIn(CH_YAW, HIGH, 30000);
-  int pwmArm = pulseIn(CH_ARM, HIGH, 30000);
-  int pwmAux = pulseIn(CH_AUX, HIGH, 30000);
+  pwmRoll = pulseIn(CH_ROLL, HIGH, 30000);
+  pwmPitch = pulseIn(CH_PITCH, HIGH, 30000);
+  pwmThrottle = pulseIn(CH_THROTTLE, HIGH, 30000);
+  pwmYaw = pulseIn(CH_YAW, HIGH, 30000);
+  pwmArm = pulseIn(CH_ARM, HIGH, 30000);
+  pwmAux = pulseIn(CH_AUX, HIGH, 30000);
 
   if (pwmThrottle > 900 && pwmThrottle < 2100) {
     lastValidSignalTime = millis();
@@ -398,8 +398,12 @@ void checkBatteryVoltage() {
 
 void updateArmingAndHoldMode() {
   // Read separate channels (CH5 = Arm switch, CH6 = Aux/Altitude hold switch)
-  unsigned long pwmArm = pulseIn(CH_ARM, HIGH, 30000);
-  unsigned long pwmAux = pulseIn(CH_AUX, HIGH, 30000);
+  pwmArm = pulseIn(CH_ARM, HIGH, 30000);
+  pwmAux = pulseIn(CH_AUX, HIGH, 30000);
+
+  // Ignore invalid PWM readings (receiver off/failsafe)
+  if (pwmArm < 800 || pwmArm > 2200) pwmArm = 1000; // Default to low/safe
+  if (pwmAux < 800 || pwmAux > 2200) pwmAux = 1000;
 
   // Altitude hold toggle (CH6 – independent of arming)
   bool auxHigh = (pwmAux > 1500);
@@ -423,23 +427,28 @@ void updateArmingAndHoldMode() {
   bool armSwitchHigh = (pwmArm > 1500); // Arm switch high = request arm
   bool throttleSafe = (rcThrottle < 1100); // Throttle must be low to allow arming
 
-  bool shouldArm = armSwitchHigh && throttleSafe;
-  bool shouldDisarm = !armSwitchHigh && armed;; // ONLY disarm when arm switch is turned OFF
+  // Arm ONLY when switch high + throttle safe + currently disarmed
+  bool shouldArm = armSwitchHigh && throttleSafe && !armed;
+
+  // Disarm ONLY when arm switch is explicitly turned low
+  bool shouldDisarm = !armSwitchHigh && armed;
 
   // Arm transition
-  if (shouldArm && !armed) {
+  if (shouldArm) {
     armed = true;
     Serial.println("ARMED - Motors active");
-    tone(BUZZER_PIN, 1200, 300); // Confirmation beep on arm
+    tone(BUZZER_PIN, 1200, 300);
+    digitalWrite(LED_ARMED, HIGH);
   }
 
-  // Disarm transition
-  if (shouldDisarm && armed) {
+  // Disarm transition (only on switch low)
+  if (shouldDisarm) {
     armed = false;
-    altitudeHoldEnabled = false; // Force disable hold on disarm (safety)
+    altitudeHoldEnabled = false; // Safety: force hold off on disarm
     stopMotors();
     Serial.println("DISARMED - Motors stopped");
-    tone(BUZZER_PIN, 600, 500); // Longer tone on disarm
+    tone(BUZZER_PIN, 600, 500);
+    digitalWrite(LED_ARMED, LOW);
   }
 }
 
@@ -598,12 +607,12 @@ void handleData() {
   json += "\"timestamp\":" + String(millis()) + ",";
 
   // Receiver channels (raw PWM)
-  json += "\"rcRoll\":" + String(pulseIn(CH_ROLL, HIGH, 30000)) + ",";
-  json += "\"rcPitch\":" + String(pulseIn(CH_PITCH, HIGH, 30000)) + ",";
-  json += "\"rcThrottle\":" + String(pulseIn(CH_THROTTLE, HIGH, 30000)) + ",";
-  json += "\"rcYaw\":" + String(pulseIn(CH_YAW, HIGH, 30000)) + ",";
-  json += "\"rcArm\":" + String(pulseIn(CH_ARM, HIGH, 30000)) + ",";
-  json += "\"rcAux\":" + String(pulseIn(CH_AUX, HIGH, 30000)) + ",";
+  json += "\"rcRoll\":" + String(pwmRoll) + ",";
+  json += "\"rcPitch\":" + String(pwmPitch) + ",";
+  json += "\"rcThrottle\":" + String(pwmThrottle) + ",";
+  json += "\"rcYaw\":" + String(pwmYaw) + ",";
+  json += "\"rcArm\":" + String(pwmArm) + ",";
+  json += "\"rcAux\":" + String(pwmAux) + ",";
 
   // Attitude & rates
   json += "\"roll\":" + String(roll, 2) + ",";
