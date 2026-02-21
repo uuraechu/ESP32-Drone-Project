@@ -42,6 +42,8 @@
 #define FAILSAFE_TIMEOUT_MS 500
 #define FAILSAFE_MIN_PULSE 800
 
+#define G_TO_MS2 9.81f
+
 const float alpha = 0.98f;
 const float GYRO_SCALE = (180.0f / M_PI); // rad/s → deg/s
 
@@ -75,6 +77,7 @@ float baroOffset = 0.0f;
 float roll = 0, pitch = 0, yawRate = 0;
 float height = 0, velocity = 0;
 float gyroRollRate = 0, gyroPitchRate = 0;
+float accelPitch = 0, accelRoll  = 0;
 float accelX = 0, accelY = 0, accelZ = 0;
 float baroAlt = 0;
 float vbat = 0.0f;
@@ -91,6 +94,8 @@ int pwmYaw = 0, pwmArm = 0, pwmAux = 0;
 float rcRoll = 0, rcPitch = 0, rcYawRate = 0, rcThrottle = 0;
 int currentPwmAux = 0;
 
+const float motorMin[4] = {1000, 1000, 1000, 1000};  // Tune these for your motors
+const float motorMax = 2000.0f;  // Same for all (full power)
 float m1, m2, m3, m4;
 
 // Global dt (updated every loop iteration)
@@ -285,7 +290,7 @@ void calibrateMPU6050() {
 
   accelOffsetX = sumAx / numSamples;
   accelOffsetY = sumAy / numSamples;
-  accelOffsetZ = (sumAz / numSamples) - 9.81f;
+  accelOffsetZ = (sumAz / numSamples) + 9.81f; // For Z-up, gravity = -g, offset adds g to zero
 
   tone(BUZZER_PIN, 1500, 300);
 }
@@ -315,15 +320,18 @@ void calibrateBarometer() {
 // CORE FLIGHT FUNCTIONS
 // ────────────────────────────────────────────────────────────────
 void readReceiver() {
-  pwmRoll = pulseIn(CH_ROLL, HIGH, 30000);
-  pwmPitch = pulseIn(CH_PITCH, HIGH, 30000);
+  pwmRoll = pulseIn(CH_ROLL, HIGH, 30000); if (pwmRoll < 800 || pwmRoll > 2200) pwmRoll = 1500;
+  pwmPitch = pulseIn(CH_PITCH, HIGH, 30000); if (pwmPitch < 800 || pwmPitch > 2200) pwmPitch = 1500;
   pwmThrottle = pulseIn(CH_THROTTLE, HIGH, 30000);
-  pwmYaw = pulseIn(CH_YAW, HIGH, 30000);
-  pwmArm = pulseIn(CH_ARM, HIGH, 30000);
-  pwmAux = pulseIn(CH_AUX, HIGH, 30000);
+  pwmYaw = pulseIn(CH_YAW, HIGH, 30000); if (pwmYaw < 800 || pwmYaw > 2200) pwmYaw = 1500;
+  pwmArm = pulseIn(CH_ARM, HIGH, 30000); if (pwmArm < 800 || pwmArm > 2200) pwmArm = 1000;
+  pwmAux = pulseIn(CH_AUX, HIGH, 30000); if (pwmAux < 800 || pwmAux > 2200) pwmAux = 1000;
 
+  // Update failsafe timer
   if (pwmThrottle > 900 && pwmThrottle < 2100) {
     lastValidSignalTime = millis();
+  } else if (pwmThrottle < 800 || pwmThrottle > 2200) {
+    pwmThrottle = 1000;
   }
 
   rcRoll = constrain(map(pwmRoll, 1000, 2000, -45, 45), -45, 45);
@@ -338,13 +346,49 @@ void readSensors() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  gyroPitchRate = (g.gyro.y * GYRO_SCALE) - gyroOffsetY;
-  gyroRollRate = (g.gyro.x * GYRO_SCALE) - gyroOffsetX;
-  yawRate = (-g.gyro.z * GYRO_SCALE) - gyroOffsetZ;
+  // Standard drone body-frame (your description):
+  // X = left-right (positive right, pitch rotation axis)
+  // Y = front-back (positive forward, roll rotation axis)
+  // Z = down-up (positive up, yaw rotation axis)
 
-  accelX = a.acceleration.x - accelOffsetX;
-  accelY = a.acceleration.y - accelOffsetY;
-  accelZ = a.acceleration.z - accelOffsetZ;
+  gyroPitchRate = (g.gyro.x * GYRO_SCALE) - gyroOffsetX; // gyro.x = left-right → pitch rate
+  gyroRollRate = (g.gyro.y * GYRO_SCALE) - gyroOffsetY; // gyro.y = front-back → roll rate
+  yawRate = (-g.gyro.z * GYRO_SCALE) - gyroOffsetZ; // gyro.z = up → yaw (negative for CW)
+
+  accelX = (a.acceleration.x - accelOffsetX) * G_TO_MS2; // left-right
+  accelY = (a.acceleration.y - accelOffsetY) * G_TO_MS2; // front-back
+  accelZ = (a.acceleration.z - accelOffsetZ) * G_TO_MS2; // up
+
+  // ── Y-axis offset compensation (IMU forward of center) ──
+  // gyroOffsetY_meters = positive forward offset
+  // Measured offsets from center of rotation (in meters)
+  const float offsetX = 0.0f;
+  const float offsetY = (27.0f / 1000.0f);
+
+  // Centripetal acceleration: ω² × r (always toward center of rotation)
+  // Tangential acceleration: α × r (perpendicular to radius, direction depends on rotation)
+
+  // ── Corrections from roll rotation (ω = gyroRollRate around Y-axis) ──
+  float centripetal_from_roll_X = gyroRollRate * gyroRollRate * offsetX; // in X direction
+  float centripetal_from_roll_Z = gyroRollRate * gyroRollRate * offsetY; // in Z direction
+
+  // ── Corrections from pitch rotation (ω = gyroPitchRate around X-axis) ──
+  float centripetal_from_pitch_Y = gyroPitchRate * gyroPitchRate * offsetY; // in Y direction
+  float centripetal_from_pitch_Z = gyroPitchRate * gyroPitchRate * offsetX; // in Z direction
+
+  // Apply corrections (signs depend on coordinate conventions)
+  float correctedAccelX = accelX - centripetal_from_roll_X; // centripetal pulls toward center
+  float correctedAccelY = accelY - centripetal_from_pitch_Y;
+  float correctedAccelZ = accelZ + centripetal_from_roll_Z + centripetal_from_pitch_Z; // tangential adds outward
+
+  // Gravity-referenced tilt angles (Z-up)
+  accelPitch = atan2(correctedAccelX, sqrt(correctedAccelY * correctedAccelY + correctedAccelZ * correctedAccelZ)) * GYRO_SCALE;
+  accelRoll = atan2(-correctedAccelY, -correctedAccelZ) * GYRO_SCALE;
+
+  // Overwrite raw values for consistency in fusion/telemetry
+  accelX = correctedAccelX;
+  accelY = correctedAccelY;
+  accelZ = correctedAccelZ;
 
   static float seaLevel = 1013.25f;
   baroAlt = bmp.readAltitude(seaLevel) - baroOffset;
@@ -397,14 +441,6 @@ void checkBatteryVoltage() {
 }
 
 void updateArmingAndHoldMode() {
-  // Read separate channels (CH5 = Arm switch, CH6 = Aux/Altitude hold switch)
-  pwmArm = pulseIn(CH_ARM, HIGH, 30000);
-  pwmAux = pulseIn(CH_AUX, HIGH, 30000);
-
-  // Ignore invalid PWM readings (receiver off/failsafe)
-  if (pwmArm < 800 || pwmArm > 2200) pwmArm = 1000; // Default to low/safe
-  if (pwmAux < 800 || pwmAux > 2200) pwmAux = 1000;
-
   // Altitude hold toggle (CH6 – independent of arming)
   bool auxHigh = (pwmAux > 1500);
 
@@ -453,9 +489,6 @@ void updateArmingAndHoldMode() {
 }
 
 void fuseAttitude(float dt) {
-  float accelPitch = atan2(accelX, sqrt(accelY*accelY + accelZ*accelZ)) * GYRO_SCALE;
-  float accelRoll = atan2(-accelY, accelZ) * GYRO_SCALE;
-
   pitch = alpha * (pitch + gyroPitchRate * dt) + (1.0f - alpha) * accelPitch;
   roll = alpha * (roll + gyroRollRate * dt) + (1.0f - alpha) * accelRoll;
 }
@@ -466,7 +499,8 @@ void fuseAltitude(float dt) {
   float sr = sin(roll * DEG_TO_RAD);
   float sp = sin(pitch * DEG_TO_RAD);
 
-  float zAccel = (accelZ * cr * cp - accelY * sr - accelX * sp) - 9.81f;
+  // For Z-up, gravity is -G → net = measured - (-G) = measured + G
+  float zAccel = (accelZ * cr * cp - accelX * sr - accelY * sp) + G_TO_MS2;
 
   velocity = 0.92f * (velocity + zAccel * dt) + 0.08f * ((baroAlt - height) / dt);
   height = 0.92f * (height + velocity * dt) + 0.08f * baroAlt;
@@ -493,15 +527,23 @@ void mixAndWriteMotors() {
     throttle = constrain(throttle, 1000, 1800);
   }
 
-  m1 = throttle + rollOutput + pitchOutput - yawRateOutput;
-  m2 = throttle - rollOutput + pitchOutput + yawRateOutput;
-  m3 = throttle - rollOutput - pitchOutput - yawRateOutput;
-  m4 = throttle + rollOutput - pitchOutput + yawRateOutput;
+  // Calculate base mixing (same as before)
+  float m1_raw = throttle - rollOutput + pitchOutput + yawRateOutput;
+  float m2_raw = throttle + rollOutput + pitchOutput - yawRateOutput;
+  float m3_raw = throttle + rollOutput - pitchOutput + yawRateOutput;
+  float m4_raw = throttle - rollOutput - pitchOutput - yawRateOutput;
 
-  m1 = constrain(m1, 1000, 2000);
-  m2 = constrain(m2, 1000, 2000);
-  m3 = constrain(m3, 1000, 2000);
-  m4 = constrain(m4, 1000, 2000);
+  // Linear scale each motor from its own min → 2000 µs
+  m1 = motorMin[0] + (m1_raw - 1000) * (motorMax - motorMin[0]) / (2000 - 1000);
+  m2 = motorMin[1] + (m2_raw - 1000) * (motorMax - motorMin[1]) / (2000 - 1000);
+  m3 = motorMin[2] + (m3_raw - 1000) * (motorMax - motorMin[2]) / (2000 - 1000);
+  m4 = motorMin[3] + (m4_raw - 1000) * (motorMax - motorMin[3]) / (2000 - 1000);
+
+  // Safety constrain
+  m1 = constrain(m1, motorMin[0], 2000);
+  m2 = constrain(m2, motorMin[1], 2000);
+  m3 = constrain(m3, motorMin[2], 2000);
+  m4 = constrain(m4, motorMin[3], 2000);
 
   writeESC(ESC1, m1);
   writeESC(ESC2, m2);
