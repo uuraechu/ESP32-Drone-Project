@@ -382,7 +382,7 @@ void readSensors() {
   float correctedAccelZ = accelZ + (gyroPitchRate * gyroPitchRate * offsetZ + gyroRollRate * gyroRollRate * offsetZ);
 
   // Gravity-referenced tilt angles (Z-up)
-  accelPitch = atan2(correctedAccelY, correctedAccelZ) * GYRO_SCALE;
+  accelPitch = -atan2(correctedAccelY, correctedAccelZ) * GYRO_SCALE;
   accelRoll = atan2(correctedAccelX, sqrt(pow(correctedAccelY, 2) + pow(correctedAccelZ, 2))) * GYRO_SCALE;
 
   // Overwrite raw values for consistency in fusion/telemetry
@@ -501,7 +501,7 @@ void fuseAltitude(float dt) {
   float sp = sin(pitch * DEG_TO_RAD);
 
   // For Z-up, gravity is -G → net = measured - (-G) = measured + G
-  float zAccel = (accelZ * cr * cp) - (accelX * sr) - (accelY * sp) - GRAVITY_CON;
+  float zAccel = accelZ * (cp * cr) + accelY * (sp * cr) - accelX * sr - GRAVITY_CON;
 
   velocity = 0.92f * (velocity + zAccel * dt) + 0.08f * ((baroAlt - height) / dt);
   height = 0.92f * (height + velocity * dt) + 0.08f * baroAlt;
@@ -529,10 +529,10 @@ void mixAndWriteMotors() {
   }
 
   // Calculate base mixing (same as before)
-  float m1_raw = throttle + rollOutput + pitchOutput + yawRateOutput;
-  float m2_raw = throttle - rollOutput + pitchOutput - yawRateOutput;
-  float m3_raw = throttle - rollOutput - pitchOutput + yawRateOutput;
-  float m4_raw = throttle + rollOutput - pitchOutput - yawRateOutput;
+  float m1_raw = throttle + rollOutput + pitchOutput - yawRateOutput;
+  float m2_raw = throttle - rollOutput + pitchOutput + yawRateOutput;
+  float m3_raw = throttle - rollOutput - pitchOutput - yawRateOutput;
+  float m4_raw = throttle + rollOutput - pitchOutput + yawRateOutput;
 
   // Linear scale each motor from its own min → 2000 µs
   m1 = motorMin[0] + (m1_raw - 1000) * (motorMax - motorMin[0]) / (2000 - 1000);
