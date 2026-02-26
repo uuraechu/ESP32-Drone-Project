@@ -41,12 +41,9 @@
 #define GRAVITY_CON 9.81f
 #define LOOP_INTERVAL_MS 5
 
-const float seaLevel = 1013.25f;
-const float GYRO_SCALE = (180.0f / M_PI); // rad/s → deg/s
-
-// WiFi AP settings
-const char* apSSID = "QuadTelemetry";
-const char* apPassword = "flysafe123";
+// ── USER CONFIGURATION (WiFi AP settings) ───────────────────────
+#define WIFI_SSID "QuadTelemetry" // ← change before public use
+#define WIFI_PASSWORD "flysafe123" // ← change before public use
 
 // ────────────────────────────────────────────────────────────────
 // GLOBAL STATE VARIABLES
@@ -74,7 +71,7 @@ float baroOffset = 0.0f;
 float roll = 0, pitch = 0, yawRate = 0;
 float height = 0, velocity = 0;
 float gyroRollRate = 0, gyroPitchRate = 0;
-float accelPitch = 0, accelRoll  = 0;
+float accelPitch = 0, accelRoll = 0;
 float accelX = 0, accelY = 0, accelZ = 0;
 float baroAlt = 0;
 float vbat = 0.0f;
@@ -94,9 +91,11 @@ uint16_t m1, m2, m3, m4;
 
 float rcRoll = 0, rcPitch = 0, rcYawRate = 0, rcThrottle = 0;
 
+const float seaLevel = 1013.25f;
+const float GYRO_SCALE = (180.0f / M_PI); // rad/s → deg/s
 const float ADC_TO_VBAT = (3.3f / 4095.0f) * VDIV_M;
 const float motorMin[4] = {1000, 1040, 1050, 1070}; // Tune these for your motors
-const float motorMax = 2000.0f;  // Same for all (full power)
+const float motorMax = 2000.0f; // Same for all (full power)
 
 struct BuzzerState {
   bool active = false;
@@ -114,6 +113,19 @@ BuzzerState buzzer;
 
 // Mutex for shared data between cores:
 SemaphoreHandle_t dataMutex;
+SemaphoreHandle_t rcMutex;
+
+// Shared RC values — written by Core 0 rcTask, read by Core 1 flight loop
+volatile uint16_t sharedPwmRoll = 1500;
+volatile uint16_t sharedPwmPitch = 1500;
+volatile uint16_t sharedPwmThrottle = 1000;
+volatile uint16_t sharedPwmYaw = 1500;
+volatile uint16_t sharedPwmArm = 1000;
+volatile uint16_t sharedPwmAux = 1000;
+volatile unsigned long sharedLastValidSignal = 0;
+
+// Runtime debug toggle — controlled via HTTP /debug endpoint
+volatile bool debugOutputEnabled = false; // off by default for flight
 
 const float alpha = 0.98f;
 const float alpha_inv = 1.0f - alpha;
@@ -168,6 +180,7 @@ void loop() {
   unsigned long now = millis();
   unsigned long elapsed = now - prevTime;
   if (elapsed < LOOP_INTERVAL_MS) return;
+  prevTime = now;
 
   readReceiver();
   checkReceiverFailsafe();
@@ -176,7 +189,6 @@ void loop() {
   updateBuzzer();
 
   if (!armed) {
-    prevTime = now;
     stopMotors();
     updateLEDs();
     return;
@@ -184,16 +196,11 @@ void loop() {
 
   readSensors();
 
-  unsigned long now2 = millis();
-  unsigned long elapsed2 = now2 - prevTime;
-  prevTime = now2;
-
   xSemaphoreTake(dataMutex, portMAX_DELAY);
-  global_dt = elapsed2 / 1000.0f;
+  global_dt = elapsed / 1000.0f;
 
-  // Setpoints applied inside mutex — consistent with PID compute
   rollSetpoint = rcRoll;
-  pitchSetpoint = rcPitch;
+  pitchSetpoint = -rcPitch;
   yawRateSetpoint = rcYawRate;
 
   if (!altitudeHoldEnabled) {
@@ -289,21 +296,91 @@ void initPIDs() {
 }
 
 void initHTTPTelemetry() {
-  WiFi.softAP(apSSID, apPassword);
+  WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
   IPAddress IP = WiFi.softAPIP();
 
   Serial.println("WiFi AP started");
-  Serial.print("SSID: "); Serial.println(apSSID);
-  Serial.print("Password: "); Serial.println(apPassword);
+  Serial.print("SSID: "); Serial.println(WIFI_SSID);
+  Serial.print("Password: "); Serial.println(WIFI_PASSWORD);
   Serial.print("Open browser at: http://"); Serial.println(IP);
 
   server.on("/", handleRoot);
   server.on("/data", handleData);
+
+  // Debug toggle endpoints
+  server.on("/debug/on", []() {
+    debugOutputEnabled = true;
+    server.send(200, "application/json", "{\"debug\":true}");
+    Serial.println("Debug output ENABLED via HTTP");
+  });
+  server.on("/debug/off", []() {
+    debugOutputEnabled = false;
+    server.send(200, "application/json", "{\"debug\":false}");
+    Serial.println("Debug output DISABLED via HTTP");
+  });
+  server.on("/debug", []() {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "{\"debug\":%s}",
+             debugOutputEnabled ? "true" : "false");
+    server.send(200, "application/json", buf);
+  });
+
   server.begin();
   Serial.println("HTTP telemetry server started.");
 
   dataMutex = xSemaphoreCreateMutex();
+  rcMutex = xSemaphoreCreateMutex();
 
+  // RC task — Core 0, priority 2
+  // Throttle read first so sharedLastValidSignal is updated immediately —
+  // reduces failsafe detection delay from ~26ms to ~1.5ms typical.
+  // vTaskDelay(1) between each channel gives WiFiTask ~23% CPU share.
+  xTaskCreatePinnedToCore(
+    [](void*) {
+      const uint32_t timeout_us = 30000;
+      while (1) {
+        uint16_t r, p, t, y, arm, aux;
+
+        // ── Throttle first — update signal timestamp immediately ──
+        t = pulseIn(CH_THROTTLE, HIGH, timeout_us);
+        if (t > 900 && t < 2100)
+          sharedLastValidSignal = millis();
+        if (t == 0 || t < 800 || t > 2200) t = 1000;
+        vTaskDelay(1);
+
+        // ── Remaining channels ──
+        r = pulseIn(CH_ROLL, HIGH, timeout_us); if (r < 800 || r > 2200) r = 1500;
+        vTaskDelay(1);
+        p = pulseIn(CH_PITCH, HIGH, timeout_us); if (p < 800 || p > 2200) p = 1500;
+        vTaskDelay(1);
+        y = pulseIn(CH_YAW, HIGH, timeout_us); if (y < 800 || y > 2200) y = 1500;
+        vTaskDelay(1);
+        arm = pulseIn(CH_ARM, HIGH, timeout_us); if (arm < 800 || arm > 2200) arm = 1000;
+        vTaskDelay(1);
+        aux = pulseIn(CH_AUX, HIGH, timeout_us); if (aux < 800 || aux > 2200) aux = 1000;
+        vTaskDelay(1);
+
+        // ── Full snapshot write at end of frame ──
+        xSemaphoreTake(rcMutex, portMAX_DELAY);
+        sharedPwmRoll = r;
+        sharedPwmPitch = p;
+        sharedPwmThrottle = t;
+        sharedPwmYaw = y;
+        sharedPwmArm = arm;
+        sharedPwmAux = aux;
+        xSemaphoreGive(rcMutex);
+      }
+    },
+    "RCTask",
+    2048,
+    nullptr,
+    2, // priority 2 — preempts WiFiTask during pulseIn
+    nullptr,
+    0 // Core 0
+  );
+
+  // WiFi task — Core 0, priority 1
+  // Gets CPU during the 6x vTaskDelay(1) windows per RC frame (~23% share)
   xTaskCreatePinnedToCore(
     [](void*) {
       while (1) {
@@ -314,9 +391,9 @@ void initHTTPTelemetry() {
     "WiFiTask",
     8192,
     nullptr,
-    1,
+    1, // priority 1 — yields to RCTask
     nullptr,
-    0
+    0 // Core 0
   );
 }
 
@@ -384,21 +461,22 @@ void calibrateBarometer() {
 // CORE FLIGHT FUNCTIONS
 // ────────────────────────────────────────────────────────────────
 void readReceiver() {
-  const uint32_t timeout_us = 30000; // 30 ms
+  xSemaphoreTake(rcMutex, portMAX_DELAY);
+  pwmRoll = sharedPwmRoll;
+  pwmPitch = sharedPwmPitch;
+  pwmThrottle = sharedPwmThrottle;
+  pwmYaw = sharedPwmYaw;
+  pwmArm = sharedPwmArm;
+  pwmAux = sharedPwmAux;
+  lastValidSignalTime = sharedLastValidSignal;
+  xSemaphoreGive(rcMutex);
 
-  pwmRoll = pulseIn(CH_ROLL, HIGH, timeout_us); if (pwmRoll < 800 || pwmRoll > 2200) pwmRoll = 1500;
-  pwmPitch = pulseIn(CH_PITCH, HIGH, timeout_us); if (pwmPitch < 800 || pwmPitch > 2200) pwmPitch = 1500;
-  pwmThrottle = pulseIn(CH_THROTTLE, HIGH, timeout_us); 
-  pwmYaw = pulseIn(CH_YAW, HIGH, timeout_us); if (pwmYaw < 800 || pwmYaw > 2200) pwmYaw = 1500;
-  pwmArm = pulseIn(CH_ARM, HIGH, timeout_us); if (pwmArm < 800 || pwmArm > 2200) pwmArm = 1000;
-  pwmAux = pulseIn(CH_AUX, HIGH, timeout_us); if (pwmAux < 800 || pwmAux > 2200) pwmAux = 1000;
+  // Tighter angle limit in altitude hold — preserves thrust headroom and
+  // altitude estimate reliability. cos(25°)=0.906 vs cos(45°)=0.707.
+  float angleLimit = altitudeHoldEnabled ? 25.0f : 45.0f;
 
-  if (pwmThrottle > 900 && pwmThrottle < 2100) lastValidSignalTime = millis();
-
-  if (pwmThrottle == 0 || pwmThrottle < 800 || pwmThrottle > 2200) pwmThrottle = 1000;
-
-  rcRoll = constrain((pwmRoll - 1500) / 500.0f * 45.0f, -45.0f, 45.0f);
-  rcPitch = constrain((pwmPitch - 1500) / 500.0f * 45.0f, -45.0f, 45.0f);
+  rcRoll = constrain((pwmRoll - 1500) / 500.0f * angleLimit, -angleLimit, angleLimit);
+  rcPitch = constrain((pwmPitch - 1500) / 500.0f * angleLimit, -angleLimit, angleLimit);
   rcYawRate = constrain((pwmYaw - 1500) / 500.0f * 220.0f, -220.0f, 220.0f);
   rcThrottle = constrain((pwmThrottle - 1000) / 1000.0f * 1000.0f, 0.0f, 1000.0f);
 }
@@ -407,39 +485,37 @@ void readSensors() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  // Standard drone body-frame (your description):
-  // X = left-right (positive right, pitch rotation axis)
-  // Y = front-back (positive forward, roll rotation axis)
-  // Z = down-up (positive up, yaw rotation axis)
+  // Body frame: X = right, Y = forward, Z = up
+  // Right-hand rule conventions:
+  // Positive pitch = nose up (rotation about +X)
+  // Positive roll = right side down (rotation about +Y)
+  // Positive yaw = right to left (rotation about +Z)
 
-  gyroPitchRate = g.gyro.x - gyroOffsetX; // gyro.x = left-right → pitch rate (rad/s)
-  gyroRollRate = g.gyro.y  - gyroOffsetY; // gyro.y = front-back → roll rate (rad/s)
-  yawRate = -(g.gyro.z - gyroOffsetZ); // gyro.z = up → yaw (negative for CW) (rad/s)
+  gyroPitchRate = g.gyro.x - gyroOffsetX; // RHR about +X: +ve = nose up
+  gyroRollRate = g.gyro.y - gyroOffsetY; // RHR about +Y: +ve = right side down
+  yawRate = g.gyro.z - gyroOffsetZ; // RHR about +Z: +ve = right to left
 
-  accelX = a.acceleration.x - accelOffsetX; // left-right
-  accelY = a.acceleration.y - accelOffsetY; // front-back
-  accelZ = a.acceleration.z - accelOffsetZ; // up
+  accelX = a.acceleration.x - accelOffsetX; // -g at 90° right-side-down
+  accelY = a.acceleration.y - accelOffsetY; // +g at 90° nose-up
+  accelZ = a.acceleration.z - accelOffsetZ; // +g when flat
 
-  // Physics: Rotation creates an INWARD (negative) acceleration component.
-  // To get the true linear motion, we must REMOVE this component.
-  // Vector Math: a_real = a_meas - (omega x (omega x r))
-  // Result: We must ADD the magnitude (w^2 * r) to cancel the inward read.
-  // Measured offsets from center of rotation (in meters)
-  const float offsetX = 0.0f; // 0 mm X offset
-  const float offsetY = (27.0f / 1000.0f); // 27 mm forward (+Y)
-  const float offsetZ = (30.0f / 1000.0f); // 30 mm above (+Z)
+  const float offsetX = 0.0f;
+  const float offsetY = (27.0f / 1000.0f); // 27mm forward CoM
+  const float offsetZ = (30.0f / 1000.0f); // 30mm above CoM
 
-  // Centripetal acceleration: ω² × r (always toward center of rotation)
-  // Centripetal corrections (subtract inward pull - sign depends on your negation)
   float correctedAccelX = accelX + (gyroRollRate * gyroRollRate * offsetX);
   float correctedAccelY = accelY + (gyroPitchRate * gyroPitchRate * offsetY);
-  float correctedAccelZ = accelZ + (gyroPitchRate * gyroPitchRate * offsetZ + gyroRollRate * gyroRollRate * offsetZ);
+  float correctedAccelZ = accelZ + (gyroPitchRate * gyroPitchRate * offsetZ
+                                  + gyroRollRate * gyroRollRate * offsetZ);
 
-  // Gravity-referenced tilt angles (Z-up)
-  accelPitch = -atan2(correctedAccelY, correctedAccelZ) * GYRO_SCALE;
-  accelRoll = atan2(correctedAccelX, sqrtf(correctedAccelY * correctedAccelY + correctedAccelZ * correctedAccelZ)) * GYRO_SCALE;
+  // +ve = nose up: atan2(+g, 0) = +90° at 90° nose-up ✓
+  accelPitch = atan2f(correctedAccelY, correctedAccelZ) * GYRO_SCALE;
 
-  // Overwrite raw values for consistency in fusion/telemetry
+  // +ve = right side down: -atan2(-g, 0) = +90° at 90° right-side-down ✓
+  accelRoll = -atan2f(correctedAccelX,
+                sqrtf(correctedAccelY * correctedAccelY
+                    + correctedAccelZ * correctedAccelZ)) * GYRO_SCALE;
+
   accelX = correctedAccelX;
   accelY = correctedAccelY;
   accelZ = correctedAccelZ;
@@ -539,7 +615,7 @@ void updateArmingAndHoldMode() {
       altSetpoint = height + (rcThrottle - 500.0f) * feedforward_factor;
 
       Serial.println("Altitude hold ENABLED");
-      buzzerAlert(1, 200, 1400, 50, 0);  // ← priority 0, won't interrupt battery/failsafe
+      buzzerAlert(1, 200, 1400, 50, 0); // ← priority 0, won't interrupt battery/failsafe
     } else {
       // Disabling hold → restore full integral term
       pidAlt.SetTunings(pidAlt.GetKp(), originalAltKi, pidAlt.GetKd());
@@ -567,7 +643,7 @@ void updateArmingAndHoldMode() {
   if (canArm && !armed) {
     armed = true;
     Serial.println("ARMED - Motors active");
-    buzzerAlert(1, 300, 1200, 50, 0);  // ← priority 0
+    buzzerAlert(1, 300, 1200, 50, 0); // ← priority 0
     digitalWrite(LED_ARMED, HIGH);
   }
 
@@ -577,7 +653,7 @@ void updateArmingAndHoldMode() {
     altitudeHoldEnabled = false;
     stopMotors();
     Serial.println("DISARMED - Motors stopped");
-    buzzerAlert(1, 500, 600, 50, 0);   // ← priority 0
+    buzzerAlert(1, 500, 600, 50, 0); // ← priority 0
     digitalWrite(LED_ARMED, LOW);
   }
 }
@@ -586,20 +662,47 @@ void fuseAttitude(float dt, float &cr_out, float &cp_out, float &sr_out, float &
   const float gyroScale_dt = GYRO_SCALE * dt;
 
   pitch = alpha * (pitch + gyroPitchRate * gyroScale_dt) + alpha_inv * accelPitch;
-  roll  = alpha * (roll  + gyroRollRate  * gyroScale_dt) + alpha_inv * accelRoll;
+  roll = alpha * (roll + gyroRollRate * gyroScale_dt) + alpha_inv * accelRoll;
 
-  float cr = cosf(roll  * DEG_TO_RAD);
+  float cr = cosf(roll * DEG_TO_RAD);
   float cp = cosf(pitch * DEG_TO_RAD);
-  float sr = sinf(roll  * DEG_TO_RAD);
+  float sr = sinf(roll * DEG_TO_RAD);
   float sp = sinf(pitch * DEG_TO_RAD);
 
   cr_out = cr; cp_out = cp; sr_out = sr; sp_out = sp;
 }
 
 void fuseAltitude(float dt, float cr, float cp, float sr, float sp) {
-  float zAccel = accelZ * (cp * cr) + accelY * (sp * cr) - accelX * sr - GRAVITY_CON;
+  // R = Rx(pitch) · Ry(roll)
+  // a_world = R · a_body
+  //
+  // [ cr      0      sr    ]   [ accelX ]   [ worldX ]
+  // [ sr*sp   cp    -cr*sp ] · [ accelY ] = [ worldY ]
+  // [-sr*cp   sp     cr*cp ]   [ accelZ ]   [ worldZ ]
+  //
+  // World-up row of R (world Z):
+  //   body X component: -sr * cp
+  //   body Y component:  sp
+  //   body Z component:  cr * cp
+  //
+  // Verified:
+  // Flat stationary:          0       + 0      + g    - g = 0 ✓
+  // 90° roll right-side-down: -(-g)*1 + 0      + 0    - g = 0 ✓
+  // 90° nose-up:              0       + g*1    + 0    - g = 0 ✓
+  // Flat +1m/s² up:           0       + 0      +(g+1) - g = 1 ✓
 
-  velocity = 0.92f * (velocity + zAccel * dt) + 0.08f * ((baroAlt - height) / dt);
+  float R_world_up[3] = {
+    -sr * cp, // body X component of world-up
+     sp, // body Y component of world-up
+     cr * cp // body Z component of world-up
+  };
+
+  float worldZ = R_world_up[0] * accelX
+               + R_world_up[1] * accelY
+               + R_world_up[2] * accelZ
+               - GRAVITY_CON;
+
+  velocity = 0.92f * (velocity + worldZ * dt) + 0.08f * ((baroAlt - height) / dt);
   height = 0.92f * (height + velocity * dt) + 0.08f * baroAlt;
 }
 
@@ -630,10 +733,10 @@ void mixAndWriteMotors() {
     throttle = constrain((rcThrottle / 1000.0f) * 800.0f + 1000.0f, 1000.0f, 1800.0f);
   }
 
-  float m1_raw = throttle + rollOutput + pitchOutput - yawRateOutput;
-  float m2_raw = throttle - rollOutput + pitchOutput + yawRateOutput;
-  float m3_raw = throttle - rollOutput - pitchOutput - yawRateOutput;
-  float m4_raw = throttle + rollOutput - pitchOutput + yawRateOutput;
+  float m1_raw = throttle + rollOutput + pitchOutput + yawRateOutput; // FL CW
+  float m2_raw = throttle - rollOutput + pitchOutput - yawRateOutput; // FR CCW
+  float m3_raw = throttle - rollOutput - pitchOutput + yawRateOutput; // RR CW
+  float m4_raw = throttle + rollOutput - pitchOutput - yawRateOutput; // RL CCW
 
   float m1_scaled = motorMin[0] + (m1_raw - 1000.0f) * motorScale[0];
   float m2_scaled = motorMin[1] + (m2_raw - 1000.0f) * motorScale[1];
@@ -738,13 +841,13 @@ void updateBuzzer() {
 }
 
 void updateLEDs() {
-  unsigned long now = millis();  // ← single call
+  unsigned long now = millis();
 
-  digitalWrite(LED_ARMED,   armed              ? HIGH : LOW);
+  digitalWrite(LED_ARMED, armed ? HIGH : LOW);
   digitalWrite(LED_ALTHOLD, altitudeHoldEnabled ? HIGH : LOW);
 
-  static unsigned long lastFsBlink  = 0;
-  static bool          fsBlinkState = false;
+  static unsigned long lastFsBlink = 0;
+  static bool fsBlinkState = false;
   if (receiverFailsafeActive) {
     if (now - lastFsBlink > 150) {
       fsBlinkState = !fsBlinkState;
@@ -756,8 +859,8 @@ void updateLEDs() {
     digitalWrite(LED_FAILSAFE, LOW);
   }
 
-  static unsigned long lastLbBlink  = 0;
-  static bool          lbBlinkState = false;
+  static unsigned long lastLbBlink = 0;
+  static bool lbBlinkState = false;
   if (lowBatCutoff) {
     digitalWrite(LED_LOWBAT, HIGH);
     lbBlinkState = true;
@@ -774,6 +877,8 @@ void updateLEDs() {
 }
 
 void debugOutput() {
+  if (!debugOutputEnabled) return;
+
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint < 250) return;
   lastPrint = millis();
@@ -809,23 +914,23 @@ void handleData() {
   float l_gyroPitch = gyroPitchRate;
   float l_vbat = vbat;
   float l_dt = global_dt;
-  bool  l_armed = armed;
-  bool  l_altHold = altitudeHoldEnabled;
+  bool l_armed = armed;
+  bool l_altHold = altitudeHoldEnabled;
   uint16_t l_pwmRoll = pwmRoll;
   uint16_t l_pwmPitch = pwmPitch;
   uint16_t l_pwmThrottle = pwmThrottle;
   uint16_t l_pwmYaw = pwmYaw;
   uint16_t l_pwmArm = pwmArm;
   uint16_t l_pwmAux = pwmAux;
-  float l_temperature = temperature; // safe snapshot — written on Core 1, float is atomic
+  float l_temperature = temperature;
   xSemaphoreGive(dataMutex);
 
   if (l_dt > 0.001f) {
-    rotAccRoll  = 0.7f * rotAccRoll  + 0.3f * ((l_gyroRoll  - prevRollRate)  / l_dt) * GYRO_SCALE;
+    rotAccRoll = 0.7f * rotAccRoll + 0.3f * ((l_gyroRoll - prevRollRate) / l_dt) * GYRO_SCALE;
     rotAccPitch = 0.7f * rotAccPitch + 0.3f * ((l_gyroPitch - prevPitchRate) / l_dt) * GYRO_SCALE;
-    rotAccYaw   = 0.7f * rotAccYaw   + 0.3f * ((l_yawRate   - prevYawRate_s) / l_dt) * GYRO_SCALE;
+    rotAccYaw = 0.7f * rotAccYaw + 0.3f * ((l_yawRate - prevYawRate_s) / l_dt) * GYRO_SCALE;
   }
-  prevRollRate  = l_gyroRoll;
+  prevRollRate = l_gyroRoll;
   prevPitchRate = l_gyroPitch;
   prevYawRate_s = l_yawRate;
 
@@ -848,13 +953,13 @@ void handleData() {
     l_roll, l_pitch, l_yawRate,
     l_height, l_velocity,
     l_accelX, l_accelY, l_accelZ,
-    l_gyroRoll  * GYRO_SCALE,
+    l_gyroRoll * GYRO_SCALE,
     l_gyroPitch * GYRO_SCALE,
-    l_yawRate   * GYRO_SCALE,
+    l_yawRate * GYRO_SCALE,
     rotAccRoll, rotAccPitch, rotAccYaw,
     l_temperature,
     l_vbat,
-    l_armed   ? "true" : "false",
+    l_armed ? "true" : "false",
     l_altHold ? "true" : "false"
   );
 
@@ -876,13 +981,58 @@ void handleRoot() {
     body { font-family: Arial; background: #111; color: #0f0; margin: 20px; }
     h1 { color: #0f0; }
     pre { background: #222; padding: 15px; border-radius: 8px; font-size: 1.1em; }
+    button {
+      padding: 10px 24px; font-size: 1em; border: none;
+      border-radius: 6px; cursor: pointer; margin-bottom: 12px;
+    }
+    #toggleBtn.off { background: #333; color: #0f0; border: 1px solid #0f0; }
+    #toggleBtn.on  { background: #0f0; color: #111; }
+    #debugStatus   { margin-left: 12px; font-size: 0.95em; color: #888; }
   </style>
 </head>
 <body>
   <h1>ESP32 Quadcopter Live Data</h1>
   <p>Connected to: QuadTelemetry / flysafe123</p>
+
+  <div>
+    <button id="toggleBtn" class="off" onclick="toggleDebug()">
+      Serial Debug: OFF
+    </button>
+    <span id="debugStatus"></span>
+  </div>
+
   <pre id="data">Loading...</pre>
+
   <script>
+    let debugOn = false;
+
+    // Sync button state with current server state on load
+    fetch('/debug')
+      .then(r => r.json())
+      .then(d => setDebugState(d.debug));
+
+    function toggleDebug() {
+      fetch(debugOn ? '/debug/off' : '/debug/on')
+        .then(r => r.json())
+        .then(d => setDebugState(d.debug));
+    }
+
+    function setDebugState(state) {
+      debugOn = state;
+      const btn = document.getElementById('toggleBtn');
+      const status = document.getElementById('debugStatus');
+      if (state) {
+        btn.textContent = 'Serial Debug: ON';
+        btn.className = 'on';
+        status.textContent = 'Printing to Serial Monitor every 250ms';
+      } else {
+        btn.textContent = 'Serial Debug: OFF';
+        btn.className = 'off';
+        status.textContent = '';
+      }
+    }
+
+    // Telemetry poll
     setInterval(() => {
       fetch('/data')
         .then(r => r.json())

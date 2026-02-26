@@ -38,7 +38,7 @@ Includes live telemetry over WiFi (HTTP server — view in browser on phone or l
 
 | Component | Spec |
 |---|---|
-| Frame | 5-inch, ≤200 g target (PETG HF) |
+| Frame | 5-inch, ≤500 g target (PETG HF) |
 | Motors | 2300 KV (2205–2306 size) |
 | Props | 5-inch 2-blade (e.g. 5×4.5×2) |
 | Battery | 3S 2200 mAh 50C |
