@@ -94,18 +94,20 @@ uint16_t m1, m2, m3, m4;
 
 float rcRoll = 0, rcPitch = 0, rcYawRate = 0, rcThrottle = 0;
 
+const float ADC_TO_VBAT = (3.3f / 4095.0f) * VDIV_M;
 const float motorMin[4] = {1000, 1040, 1050, 1070}; // Tune these for your motors
 const float motorMax = 2000.0f;  // Same for all (full power)
 
 struct BuzzerState {
   bool active = false;
-  int beepsRemaining = 0; // 0 = continuous mode
+  int beepsRemaining = 0;
   int frequency = 0;
   int duration_ms = 0;
-  int pause_ms = 150; // time between beeps (or silence in continuous)
+  int pause_ms = 150;
   bool isTone = false;
   unsigned long lastToggle = 0;
-  bool continuous = false; // flag for continuous mode
+  bool continuous = false;
+  uint8_t priority = 0;
 };
 
 BuzzerState buzzer;
@@ -122,8 +124,9 @@ float global_dt = 0.0f;
 // ── FORWARD DECLARATIONS ─────────────────────────────────────────
 void handleRoot();
 void handleData();
-void buzzerAlert(int count, int duration_ms, int freq = 1200, int pause_ms = 150);
-void buzzerAlertContinuous(int freq = 800, int duration_ms = 200, int pause_ms = 100);
+void buzzerAlert(int count, int duration_ms, int freq = 1200, int pause_ms = 150, uint8_t priority = 0);
+void buzzerAlertContinuous(int freq = 800, int duration_ms = 200, int pause_ms = 100, uint8_t priority = 0);
+void buzzerStop();
 void updateBuzzer();
 void stopMotors();
 void writeESC(uint8_t pin, uint16_t us);
@@ -368,7 +371,7 @@ void calibrateBarometer() {
   Serial.print("Calibrating barometer... ");
 
   for (int i = 0; i < numSamples; i++) {
-    float alt = bmp.readAltitude(1013.25f);
+    float alt = bmp.readAltitude(seaLevel);
     sumAlt += alt;
     delay(10);
   }
@@ -434,7 +437,7 @@ void readSensors() {
 
   // Gravity-referenced tilt angles (Z-up)
   accelPitch = -atan2(correctedAccelY, correctedAccelZ) * GYRO_SCALE;
-  accelRoll = atan2(correctedAccelX, sqrt(pow(correctedAccelY, 2) + pow(correctedAccelZ, 2))) * GYRO_SCALE;
+  accelRoll = atan2(correctedAccelX, sqrtf(correctedAccelY * correctedAccelY + correctedAccelZ * correctedAccelZ)) * GYRO_SCALE;
 
   // Overwrite raw values for consistency in fusion/telemetry
   accelX = correctedAccelX;
@@ -450,13 +453,14 @@ void readSensors() {
 // ────────────────────────────────────────────────────────────────
 void checkReceiverFailsafe() {
   static int timeoutCounter = 0;
-  const int TIMEOUT_CONFIRM_LOOPS = 5;  // ~25 ms at 5 ms loop
   static int goodSignalCounter = 0;
+  const int TIMEOUT_CONFIRM_LOOPS = 5;
   const int GOOD_CONFIRM_LOOPS = 10;
+
   unsigned long now = millis();
 
   if (now - lastValidSignalTime > FAILSAFE_TIMEOUT_MS) {
-    timeoutCounter++;
+    if (timeoutCounter < TIMEOUT_CONFIRM_LOOPS) timeoutCounter++;
     goodSignalCounter = 0;
 
     if (timeoutCounter >= TIMEOUT_CONFIRM_LOOPS && !receiverFailsafeActive) {
@@ -465,11 +469,11 @@ void checkReceiverFailsafe() {
       altitudeHoldEnabled = false;
       stopMotors();
       Serial.println("FAILSAFE: No receiver signal - DISARMED!");
-      buzzerAlert(4, 250);
+      buzzerAlert(4, 250, 1200, 150, 1);
     }
   } else {
     timeoutCounter = 0;
-    goodSignalCounter++;
+    if (goodSignalCounter < GOOD_CONFIRM_LOOPS) goodSignalCounter++;
 
     if (goodSignalCounter >= GOOD_CONFIRM_LOOPS && receiverFailsafeActive) {
       receiverFailsafeActive = false;
@@ -495,14 +499,11 @@ void checkBatteryVoltage() {
   }
 
   if (sampleCount >= samples) {
-    float adc_avg = sum / (float)samples;
-    float v_divided = (adc_avg / 4095.0f) * 3.3f;
-    vbat = (v_divided * VDIV_M) + VDIV_C;
+    vbat = (sum / (float)samples) * ADC_TO_VBAT + VDIV_C;
 
     sum = 0;
     sampleCount = 0;
 
-    // Battery cutoff with hysteresis
     if (vbat < LOW_VOLT_CUTOFF && !lowBatCutoff) {
       lowBatCutoff = true;
       lowBatWarning = true;
@@ -510,15 +511,16 @@ void checkBatteryVoltage() {
       altitudeHoldEnabled = false;
       stopMotors();
       Serial.printf("LOW VOLTAGE CUTOFF! VBat = %.2f V - LATCHED\n", vbat);
-      buzzerAlertContinuous(800, 250, 100);  // continuous warning tone
-    } else if (lowBatCutoff && vbat > 9.6f) {  // recovery threshold (hysteresis)
+      buzzerStop();
+      buzzerAlertContinuous(800, 250, 100, 2);
+    } else if (lowBatCutoff && vbat > 9.6f) {
       lowBatCutoff = false;
       Serial.printf("Battery recovered: VBat = %.2f V - cutoff cleared\n", vbat);
       buzzerStop();
     } else if (vbat < VOLT_WARNING && !lowBatWarning) {
       lowBatWarning = true;
       Serial.printf("LOW BATTERY WARNING! VBat = %.2f V\n", vbat);
-      buzzerAlert(2, 200, 1000, 150);
+      buzzerAlert(2, 200, 1000, 150, 2);
     } else if (vbat >= VOLT_WARNING) {
       lowBatWarning = false;
     }
@@ -537,8 +539,7 @@ void updateArmingAndHoldMode() {
       altSetpoint = height + (rcThrottle - 500.0f) * feedforward_factor;
 
       Serial.println("Altitude hold ENABLED");
-      buzzerStop();
-      tone(BUZZER_PIN, 1400, 200);
+      buzzerAlert(1, 200, 1400, 50, 0);  // ← priority 0, won't interrupt battery/failsafe
     } else {
       // Disabling hold → restore full integral term
       pidAlt.SetTunings(pidAlt.GetKp(), originalAltKi, pidAlt.GetKd());
@@ -566,36 +567,33 @@ void updateArmingAndHoldMode() {
   if (canArm && !armed) {
     armed = true;
     Serial.println("ARMED - Motors active");
-    buzzerStop();
-    tone(BUZZER_PIN, 1200, 300);
+    buzzerAlert(1, 300, 1200, 50, 0);  // ← priority 0
     digitalWrite(LED_ARMED, HIGH);
   }
 
   // Disarm transition
   if (forceDisarm && armed) {
     armed = false;
-    altitudeHoldEnabled = false;  // force off
+    altitudeHoldEnabled = false;
     stopMotors();
     Serial.println("DISARMED - Motors stopped");
-    buzzerStop();
-    tone(BUZZER_PIN, 600, 500);
+    buzzerAlert(1, 500, 600, 50, 0);   // ← priority 0
     digitalWrite(LED_ARMED, LOW);
   }
 }
 
 void fuseAttitude(float dt, float &cr_out, float &cp_out, float &sr_out, float &sp_out) {
-  pitch = alpha * (pitch + gyroPitchRate * GYRO_SCALE * dt) + alpha_inv * accelPitch;
-  roll  = alpha * (roll + gyroRollRate * GYRO_SCALE * dt) + alpha_inv * accelRoll;
+  const float gyroScale_dt = GYRO_SCALE * dt;
 
-  float cr = cos(roll  * DEG_TO_RAD);
-  float cp = cos(pitch * DEG_TO_RAD);
-  float sr = sin(roll  * DEG_TO_RAD);
-  float sp = sin(pitch * DEG_TO_RAD);
+  pitch = alpha * (pitch + gyroPitchRate * gyroScale_dt) + alpha_inv * accelPitch;
+  roll  = alpha * (roll  + gyroRollRate  * gyroScale_dt) + alpha_inv * accelRoll;
 
-  cr_out = cr;
-  cp_out = cp;
-  sr_out = sr;
-  sp_out = sp;
+  float cr = cosf(roll  * DEG_TO_RAD);
+  float cp = cosf(pitch * DEG_TO_RAD);
+  float sr = sinf(roll  * DEG_TO_RAD);
+  float sp = sinf(pitch * DEG_TO_RAD);
+
+  cr_out = cr; cp_out = cp; sr_out = sr; sp_out = sp;
 }
 
 void fuseAltitude(float dt, float cr, float cp, float sr, float sp) {
@@ -618,11 +616,18 @@ void runPIDs() {
 }
 
 void mixAndWriteMotors() {
+  static const float motorScale[4] = {
+    (motorMax - motorMin[0]) / 1000.0f,
+    (motorMax - motorMin[1]) / 1000.0f,
+    (motorMax - motorMin[2]) / 1000.0f,
+    (motorMax - motorMin[3]) / 1000.0f
+  };
+
   float throttle;
   if (altitudeHoldEnabled) {
     throttle = constrain(altOutput + 1500, 1000, 2000);
   } else {
-    throttle = constrain((rcThrottle / 1000.0f) * 1000.0f + 1000.0f, 1000.0f, 2000.0f);
+    throttle = constrain((rcThrottle / 1000.0f) * 800.0f + 1000.0f, 1000.0f, 1800.0f);
   }
 
   float m1_raw = throttle + rollOutput + pitchOutput - yawRateOutput;
@@ -630,10 +635,10 @@ void mixAndWriteMotors() {
   float m3_raw = throttle - rollOutput - pitchOutput - yawRateOutput;
   float m4_raw = throttle + rollOutput - pitchOutput + yawRateOutput;
 
-  float m1_scaled = motorMin[0] + (m1_raw - 1000) * (motorMax - motorMin[0]) / (2000 - 1000);
-  float m2_scaled = motorMin[1] + (m2_raw - 1000) * (motorMax - motorMin[1]) / (2000 - 1000);
-  float m3_scaled = motorMin[2] + (m3_raw - 1000) * (motorMax - motorMin[2]) / (2000 - 1000);
-  float m4_scaled = motorMin[3] + (m4_raw - 1000) * (motorMax - motorMin[3]) / (2000 - 1000);
+  float m1_scaled = motorMin[0] + (m1_raw - 1000.0f) * motorScale[0];
+  float m2_scaled = motorMin[1] + (m2_raw - 1000.0f) * motorScale[1];
+  float m3_scaled = motorMin[2] + (m3_raw - 1000.0f) * motorScale[2];
+  float m4_scaled = motorMin[3] + (m4_raw - 1000.0f) * motorScale[3];
 
   m1 = (uint16_t)constrain(m1_scaled, motorMin[0], 2000);
   m2 = (uint16_t)constrain(m2_scaled, motorMin[1], 2000);
@@ -662,28 +667,32 @@ void writeESC(uint8_t pin, uint16_t us) {
   ledcWrite(pin, duty);
 }
 
-void buzzerAlert(int count, int duration_ms, int freq, int pause_ms) {
-  if (buzzer.active) return; // don't interrupt running sequence
+void buzzerAlert(int count, int duration_ms, int freq, int pause_ms, uint8_t priority) {
+  if (buzzer.active && priority < buzzer.priority) return;
 
+  noTone(BUZZER_PIN);
   buzzer.active = true;
   buzzer.beepsRemaining = count;
   buzzer.frequency = freq;
   buzzer.duration_ms = duration_ms;
   buzzer.pause_ms = pause_ms;
   buzzer.continuous = false;
+  buzzer.priority = priority;
   buzzer.isTone = false;
   buzzer.lastToggle = millis();
 }
 
-void buzzerAlertContinuous(int freq, int duration_ms, int pause_ms) {
-  if (buzzer.active) return; // don't interrupt running sequence
+void buzzerAlertContinuous(int freq, int duration_ms, int pause_ms, uint8_t priority) {
+  if (buzzer.active && priority < buzzer.priority) return;
 
+  noTone(BUZZER_PIN);
   buzzer.active = true;
   buzzer.beepsRemaining = 0;
   buzzer.frequency = freq;
   buzzer.duration_ms = duration_ms;
   buzzer.pause_ms = pause_ms;
   buzzer.continuous = true;
+  buzzer.priority = priority;
   buzzer.isTone = false;
   buzzer.lastToggle = millis();
 }
@@ -694,6 +703,7 @@ void buzzerStop() {
   buzzer.isTone = false;
   buzzer.beepsRemaining = 0;
   buzzer.continuous = false;
+  buzzer.priority = 0;
 }
 
 void updateBuzzer() {
@@ -728,30 +738,37 @@ void updateBuzzer() {
 }
 
 void updateLEDs() {
-  digitalWrite(LED_ARMED, armed ? HIGH : LOW);
+  unsigned long now = millis();  // ← single call
+
+  digitalWrite(LED_ARMED,   armed              ? HIGH : LOW);
   digitalWrite(LED_ALTHOLD, altitudeHoldEnabled ? HIGH : LOW);
 
-  static unsigned long lastFsBlink = 0;
-  static bool fsBlinkState = false;
+  static unsigned long lastFsBlink  = 0;
+  static bool          fsBlinkState = false;
   if (receiverFailsafeActive) {
-    if (millis() - lastFsBlink > 150) {
+    if (now - lastFsBlink > 150) {
       fsBlinkState = !fsBlinkState;
       digitalWrite(LED_FAILSAFE, fsBlinkState);
-      lastFsBlink = millis();
+      lastFsBlink = now;
     }
   } else {
+    fsBlinkState = false;
     digitalWrite(LED_FAILSAFE, LOW);
   }
 
-  static unsigned long lastLbBlink = 0;
+  static unsigned long lastLbBlink  = 0;
+  static bool          lbBlinkState = false;
   if (lowBatCutoff) {
     digitalWrite(LED_LOWBAT, HIGH);
+    lbBlinkState = true;
   } else if (lowBatWarning) {
-    if (millis() - lastLbBlink > 200) {
-      digitalWrite(LED_LOWBAT, !digitalRead(LED_LOWBAT));
-      lastLbBlink = millis();
+    if (now - lastLbBlink > 200) {
+      lbBlinkState = !lbBlinkState;
+      digitalWrite(LED_LOWBAT, lbBlinkState);
+      lastLbBlink = now;
     }
   } else {
+    lbBlinkState = false;
     digitalWrite(LED_LOWBAT, LOW);
   }
 }
@@ -761,14 +778,15 @@ void debugOutput() {
   if (millis() - lastPrint < 250) return;
   lastPrint = millis();
 
-  Serial.printf("Arm:%d Hold:%d FSafe:%d | R:%.1f P:%.1f H:%.2f Thr:%.0f SP:%.2f VBat:%.2f | M1:%u M2:%u M3:%u M4:%u | dt:%.1f ms Loop rate: %.1f Hz\n",
+  float loopHz = (global_dt > 0.0001f) ? (1.0f / global_dt) : 0.0f;
+
+  Serial.printf("Arm:%d Hold:%d FSafe:%d | R:%.1f P:%.1f H:%.2f Thr:%.0f SP:%.2f VBat:%.2f | M1:%u M2:%u M3:%u M4:%u | dt:%.1f ms Loop: %.1f Hz\n",
                 armed, altitudeHoldEnabled, receiverFailsafeActive,
                 roll, pitch, height,
                 altitudeHoldEnabled
                   ? (float)(altOutput + 1500)
                   : constrain((rcThrottle / 1000.0f) * 800.0f + 1000.0f, 1000.0f, 1800.0f),
-                altSetpoint, vbat, m1, m2, m3, m4, global_dt * 1000.0f, 1.0f / global_dt);
-
+                altSetpoint, vbat, m1, m2, m3, m4, global_dt * 1000.0f, loopHz);
 }
 
 // ────────────────────────────────────────────────────────────────
