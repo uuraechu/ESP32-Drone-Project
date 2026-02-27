@@ -74,20 +74,11 @@ float gyroRollRate = 0, gyroPitchRate = 0;
 float accelPitch = 0, accelRoll = 0;
 float accelX = 0, accelY = 0, accelZ = 0;
 float baroAlt = 0;
-float vbat = 0.0f;
-float temperature = 0.0f;
-
-bool armed = false;
-bool altitudeHoldEnabled = false;
-bool receiverFailsafeActive = false;
-bool lowBatCutoff = false; // latched cutoff state
-bool lowBatWarning = false; // separate warning flag
 
 unsigned long prevTime = 0;
 unsigned long lastValidSignalTime = 0;
 uint16_t pwmRoll = 0, pwmPitch = 0, pwmThrottle = 0;
 uint16_t pwmYaw = 0, pwmArm = 0, pwmAux = 0;
-uint16_t m1, m2, m3, m4;
 
 float rcRoll = 0, rcPitch = 0, rcYawRate = 0, rcThrottle = 0;
 
@@ -126,6 +117,17 @@ volatile unsigned long sharedLastValidSignal = 0;
 
 // Runtime debug toggle — controlled via HTTP /debug endpoint
 volatile bool debugOutputEnabled = false; // off by default for flight
+
+// Volatile — written outside dataMutex, read inside it in handleData()
+// volatile prevents compiler reordering across the mutex barrier
+volatile float vbat = 0.0f;
+volatile float temperature = 0.0f;
+volatile bool armed = false;
+volatile bool altitudeHoldEnabled = false;
+volatile bool receiverFailsafeActive = false;
+volatile bool lowBatCutoff = false;
+volatile bool lowBatWarning = false;
+volatile uint16_t m1, m2, m3, m4;
 
 const float alpha = 0.98f;
 const float alpha_inv = 1.0f - alpha;
@@ -200,7 +202,7 @@ void loop() {
   global_dt = elapsed / 1000.0f;
 
   rollSetpoint = rcRoll;
-  pitchSetpoint = -rcPitch;
+  pitchSetpoint = -rcPitch; // negative: forward stick = nose down = negative setpoint
   yawRateSetpoint = rcYawRate;
 
   if (!altitudeHoldEnabled) {
@@ -338,6 +340,18 @@ void initHTTPTelemetry() {
   xTaskCreatePinnedToCore(
     [](void*) {
       const uint32_t timeout_us = 30000;
+
+      // Per-channel previous values for spike rejection
+      uint16_t prevT = 1000;
+      uint16_t prevR = 1500;
+      uint16_t prevP = 1500;
+      uint16_t prevY = 1500;
+      uint16_t prevArm = 1000;
+      uint16_t prevAux = 1000;
+
+      // Anything larger is a measurement spike — discard and keep previous value.
+      const uint16_t SPIKE_THRESHOLD = 600;
+
       while (1) {
         uint16_t r, p, t, y, arm, aux;
 
@@ -345,27 +359,65 @@ void initHTTPTelemetry() {
         t = pulseIn(CH_THROTTLE, HIGH, timeout_us);
         if (t > 900 && t < 2100)
           sharedLastValidSignal = millis();
-        if (t == 0 || t < 800 || t > 2200) t = 1000;
+        if (t == 0 || t < 800 || t > 2200)
+          t = prevT;  // out of range → keep previous
+        else if (abs((int)t - (int)prevT) > SPIKE_THRESHOLD)
+          t = prevT;  // spike → keep previous
+        else
+          prevT = t;  // valid → update previous
         vTaskDelay(1);
 
         // ── Remaining channels ──
-        r = pulseIn(CH_ROLL, HIGH, timeout_us); if (r < 800 || r > 2200) r = 1500;
+        r = pulseIn(CH_ROLL, HIGH, timeout_us);
+        if (r < 800 || r > 2200)
+          r = prevR;
+        else if (abs((int)r - (int)prevR) > SPIKE_THRESHOLD)
+          r = prevR;
+        else
+          prevR = r;
         vTaskDelay(1);
-        p = pulseIn(CH_PITCH, HIGH, timeout_us); if (p < 800 || p > 2200) p = 1500;
+
+        p = pulseIn(CH_PITCH, HIGH, timeout_us);
+        if (p < 800 || p > 2200)
+          p = prevP;
+        else if (abs((int)p - (int)prevP) > SPIKE_THRESHOLD)
+          p = prevP;
+        else
+          prevP = p;
         vTaskDelay(1);
-        y = pulseIn(CH_YAW, HIGH, timeout_us); if (y < 800 || y > 2200) y = 1500;
+
+        y = pulseIn(CH_YAW, HIGH, timeout_us);
+        if (y < 800 || y > 2200)
+          y = prevY;
+        else if (abs((int)y - (int)prevY) > SPIKE_THRESHOLD)
+          y = prevY;
+        else
+          prevY = y;
         vTaskDelay(1);
-        arm = pulseIn(CH_ARM, HIGH, timeout_us); if (arm < 800 || arm > 2200) arm = 1000;
+
+        // ── Arm switch — range check only, no spike threshold ──
+        // Legitimate flip covers full range in one frame
+        arm = pulseIn(CH_ARM, HIGH, timeout_us);
+        if (arm < 800 || arm > 2200)
+          arm = prevArm;
+        else
+          prevArm = arm;
         vTaskDelay(1);
-        aux = pulseIn(CH_AUX, HIGH, timeout_us); if (aux < 800 || aux > 2200) aux = 1000;
+
+        // ── Aux switch — range check only, no spike threshold ──
+        aux = pulseIn(CH_AUX, HIGH, timeout_us);
+        if (aux < 800 || aux > 2200)
+          aux = prevAux;
+        else
+          prevAux = aux;
         vTaskDelay(1);
 
         // ── Full snapshot write at end of frame ──
         xSemaphoreTake(rcMutex, portMAX_DELAY);
-        sharedPwmRoll = r;
-        sharedPwmPitch = p;
+        sharedPwmRoll= r;
+        sharedPwmPitch= p;
         sharedPwmThrottle = t;
-        sharedPwmYaw = y;
+        sharedPwmYaw= y;
         sharedPwmArm = arm;
         sharedPwmAux = aux;
         xSemaphoreGive(rcMutex);
@@ -374,9 +426,9 @@ void initHTTPTelemetry() {
     "RCTask",
     2048,
     nullptr,
-    2, // priority 2 — preempts WiFiTask during pulseIn
+    2,
     nullptr,
-    0 // Core 0
+    0
   );
 
   // WiFi task — Core 0, priority 1
@@ -901,6 +953,21 @@ void handleData() {
   static float prevRollRate = 0, prevPitchRate = 0, prevYawRate_s = 0;
   static float rotAccRoll = 0, rotAccPitch = 0, rotAccYaw = 0;
 
+  // ── RC snapshot — read directly from shared vars under rcMutex ──
+  // Avoids race with Core 1 readReceiver() which writes pwm* outside dataMutex
+  uint16_t l_pwmRoll, l_pwmPitch, l_pwmThrottle;
+  uint16_t l_pwmYaw, l_pwmArm, l_pwmAux;
+
+  xSemaphoreTake(rcMutex, portMAX_DELAY);
+  l_pwmRoll = sharedPwmRoll;
+  l_pwmPitch = sharedPwmPitch;
+  l_pwmThrottle = sharedPwmThrottle;
+  l_pwmYaw = sharedPwmYaw;
+  l_pwmArm = sharedPwmArm;
+  l_pwmAux = sharedPwmAux;
+  xSemaphoreGive(rcMutex);
+
+  // ── Flight data snapshot — under dataMutex ──
   xSemaphoreTake(dataMutex, portMAX_DELAY);
   float l_roll = roll;
   float l_pitch = pitch;
@@ -916,12 +983,9 @@ void handleData() {
   float l_dt = global_dt;
   bool l_armed = armed;
   bool l_altHold = altitudeHoldEnabled;
-  uint16_t l_pwmRoll = pwmRoll;
-  uint16_t l_pwmPitch = pwmPitch;
-  uint16_t l_pwmThrottle = pwmThrottle;
-  uint16_t l_pwmYaw = pwmYaw;
-  uint16_t l_pwmArm = pwmArm;
-  uint16_t l_pwmAux = pwmAux;
+  bool l_failsafe = receiverFailsafeActive;
+  bool l_lowBatCutoff = lowBatCutoff;
+  bool l_lowBatWarning = lowBatWarning;
   float l_temperature = temperature;
   double l_altSetpoint = altSetpoint;
   uint16_t l_m1 = m1;
@@ -953,7 +1017,8 @@ void handleData() {
     "\"vbat\":%.2f,"
     "\"altSetpoint\":%.2f,"
     "\"m1\":%u,\"m2\":%u,\"m3\":%u,\"m4\":%u,"
-    "\"armed\":%s,\"altitudeHoldEnabled\":%s"
+    "\"armed\":%s,\"altitudeHoldEnabled\":%s,"
+    "\"failsafe\":%s,\"lowBatCutoff\":%s,\"lowBatWarning\":%s"
     "}",
     millis(),
     l_pwmRoll, l_pwmPitch, l_pwmThrottle, l_pwmYaw, l_pwmArm, l_pwmAux,
@@ -969,7 +1034,10 @@ void handleData() {
     l_altSetpoint,
     l_m1, l_m2, l_m3, l_m4,
     l_armed ? "true" : "false",
-    l_altHold ? "true" : "false"
+    l_altHold ? "true" : "false",
+    l_failsafe ? "true" : "false",
+    l_lowBatCutoff ? "true" : "false",
+    l_lowBatWarning ? "true" : "false"
   );
 
   if (written >= (int)sizeof(json))
@@ -1563,11 +1631,11 @@ void handleRoot() {
           document.getElementById('att-vel-val').textContent    = d.velocity.toFixed(2)+ 'm/s';
 
           // ── Status LEDs ──
-          setLed('led-armed',    d.armed,                         'green');
-          setLed('led-althold',  d.altitudeHoldEnabled,           'blue');
-          setLed('led-failsafe', d.armed === false && !d.armed,   'yellow'); // from JSON field if added
-          setLed('led-lowbat',   d.vbat < 10.2 && d.vbat > 9.3,  'yellow');
-          setLed('led-cutoff',   d.vbat <= 9.3,                   'red');
+          setLed('led-armed',    d.armed,          'green');
+          setLed('led-althold',  d.altitudeHoldEnabled, 'blue');
+          setLed('led-failsafe', d.failsafe,       'yellow');
+          setLed('led-lowbat',   d.lowBatWarning,  'yellow');
+          setLed('led-cutoff',   d.lowBatCutoff,   'red');
 
           // ── Gauges ──
           // Battery 9.0–12.6V, warn at 10.2, cutoff at 9.3
