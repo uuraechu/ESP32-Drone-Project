@@ -923,6 +923,11 @@ void handleData() {
   uint16_t l_pwmArm = pwmArm;
   uint16_t l_pwmAux = pwmAux;
   float l_temperature = temperature;
+  double l_altSetpoint = altSetpoint;
+  uint16_t l_m1 = m1;
+  uint16_t l_m2 = m2;
+  uint16_t l_m3 = m3;
+  uint16_t l_m4 = m4;
   xSemaphoreGive(dataMutex);
 
   if (l_dt > 0.001f) {
@@ -934,7 +939,7 @@ void handleData() {
   prevPitchRate = l_gyroPitch;
   prevYawRate_s = l_yawRate;
 
-  char json[1024];
+  char json[1280];
   int written = snprintf(json, sizeof(json),
     "{"
     "\"timestamp\":%lu,"
@@ -946,6 +951,8 @@ void handleData() {
     "\"rotAccRoll\":%.2f,\"rotAccPitch\":%.2f,\"rotAccYaw\":%.2f,"
     "\"temperature\":%.2f,"
     "\"vbat\":%.2f,"
+    "\"altSetpoint\":%.2f,"
+    "\"m1\":%u,\"m2\":%u,\"m3\":%u,\"m4\":%u,"
     "\"armed\":%s,\"altitudeHoldEnabled\":%s"
     "}",
     millis(),
@@ -959,6 +966,8 @@ void handleData() {
     rotAccRoll, rotAccPitch, rotAccYaw,
     l_temperature,
     l_vbat,
+    l_altSetpoint,
+    l_m1, l_m2, l_m3, l_m4,
     l_armed ? "true" : "false",
     l_altHold ? "true" : "false"
   );
@@ -978,35 +987,524 @@ void handleRoot() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Quad Telemetry</title>
   <style>
-    body { font-family: Arial; background: #111; color: #0f0; margin: 20px; }
-    h1 { color: #0f0; }
-    pre { background: #222; padding: 15px; border-radius: 8px; font-size: 1.1em; }
-    button {
-      padding: 10px 24px; font-size: 1em; border: none;
-      border-radius: 6px; cursor: pointer; margin-bottom: 12px;
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #111; color: #0f0; padding: 16px; }
+
+    h1 { font-size: 1.3em; color: #0f0; margin-bottom: 4px; }
+    p.sub { color: #555; font-size: 0.85em; margin-bottom: 16px; }
+
+    /* ── Grid layout ─────────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
     }
-    #toggleBtn.off { background: #333; color: #0f0; border: 1px solid #0f0; }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .card h2 {
+      font-size: 0.8em;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #555;
+      margin-bottom: 10px;
+    }
+
+    /* ── RC Sliders ──────────────────────────────────── */
+    .rc-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+      gap: 8px;
+    }
+    .rc-label {
+      width: 72px;
+      font-size: 0.82em;
+      color: #0a0;
+      flex-shrink: 0;
+    }
+    .rc-track {
+      flex: 1;
+      height: 8px;
+      background: #222;
+      border-radius: 4px;
+      position: relative;
+    }
+    /* Centre marker */
+    .rc-track::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: -2px;
+      width: 1px;
+      height: 12px;
+      background: #333;
+    }
+    .rc-fill {
+      position: absolute;
+      height: 100%;
+      background: #0f0;
+      border-radius: 4px;
+      transition: left 0.08s, width 0.08s;
+    }
+    .rc-thumb {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #0f0;
+      border-radius: 50%;
+      top: -1px;
+      transform: translateX(-50%);
+      transition: left 0.08s;
+      box-shadow: 0 0 4px #0f06;
+    }
+    .rc-value {
+      width: 38px;
+      font-size: 0.78em;
+      text-align: right;
+      color: #0a0;
+      flex-shrink: 0;
+    }
+
+    /* Throttle is unipolar — fill from left */
+    .rc-fill.unipolar {
+      left: 0 !important;
+    }
+
+    /* ── Attitude ────────────────────────────────────── */
+    .att-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+      gap: 8px;
+    }
+    .att-label { width: 52px; font-size: 0.82em; color: #0a0; flex-shrink: 0; }
+    .att-bar-wrap {
+      flex: 1;
+      height: 8px;
+      background: #222;
+      border-radius: 4px;
+      position: relative;
+    }
+    .att-bar-wrap::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: -2px;
+      width: 1px;
+      height: 12px;
+      background: #333;
+    }
+    .att-fill {
+      position: absolute;
+      height: 100%;
+      background: #0cf;
+      border-radius: 4px;
+      transition: left 0.08s, width 0.08s;
+    }
+    .att-thumb {
+      position: absolute;
+      width: 10px; height: 10px;
+      background: #0cf;
+      border-radius: 50%;
+      top: -1px;
+      transform: translateX(-50%);
+      transition: left 0.08s;
+      box-shadow: 0 0 4px #0cf6;
+    }
+    .att-value { width: 52px; font-size: 0.78em; text-align: right; color: #0aa; flex-shrink: 0; }
+
+    /* ── Status indicators ───────────────────────────── */
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .status-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85em;
+    }
+    .led {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #222;
+      border: 1px solid #333;
+    }
+    .led.on-green  { background: #0f0; box-shadow: 0 0 6px #0f08; border-color: #0f0; }
+    .led.on-red    { background: #f00; box-shadow: 0 0 6px #f008; border-color: #f00; }
+    .led.on-yellow { background: #ff0; box-shadow: 0 0 6px #ff08; border-color: #ff0; }
+    .led.on-blue   { background: #0cf; box-shadow: 0 0 6px #0cf8; border-color: #0cf; }
+
+    /* ── Gauges (height, vbat, temp) ─────────────────── */
+    .gauge-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+      gap: 8px;
+    }
+    .gauge-label { width: 68px; font-size: 0.82em; color: #0a0; flex-shrink: 0; }
+    .gauge-track {
+      flex: 1; height: 8px;
+      background: #222; border-radius: 4px;
+      position: relative; overflow: hidden;
+    }
+    .gauge-fill {
+      position: absolute;
+      left: 0; top: 0; height: 100%;
+      border-radius: 4px;
+      transition: width 0.15s;
+    }
+    .gauge-fill.green  { background: #0f0; }
+    .gauge-fill.yellow { background: #ff0; }
+    .gauge-fill.red    { background: #f00; }
+    .gauge-fill.cyan   { background: #0cf; }
+    .gauge-value { width: 52px; font-size: 0.78em; text-align: right; color: #0a0; flex-shrink: 0; }
+
+    /* ── Motor bars ──────────────────────────────────── */
+    .motor-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      text-align: center;
+    }
+    .motor-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .motor-bar-wrap {
+      width: 24px; height: 80px;
+      background: #222; border-radius: 4px;
+      position: relative; overflow: hidden;
+      display: flex; align-items: flex-end;
+    }
+    .motor-bar-fill {
+      width: 100%;
+      background: #0f0;
+      border-radius: 4px;
+      transition: height 0.08s;
+      min-height: 2px;
+    }
+    .motor-label { font-size: 0.75em; color: #555; }
+    .motor-value { font-size: 0.75em; color: #0a0; }
+
+    /* ── Debug toggle ────────────────────────────────── */
+    .debug-row { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; }
+    button {
+      padding: 8px 20px; font-size: 0.9em;
+      border: none; border-radius: 6px; cursor: pointer;
+    }
+    #toggleBtn.off { background: #222; color: #0f0; border: 1px solid #0f0; }
     #toggleBtn.on  { background: #0f0; color: #111; }
-    #debugStatus   { margin-left: 12px; font-size: 0.95em; color: #888; }
+    #debugStatus   { font-size: 0.82em; color: #555; }
+
+    /* ── Raw JSON ────────────────────────────────────── */
+    details { margin-top: 12px; }
+    summary { cursor: pointer; color: #555; font-size: 0.82em; margin-bottom: 6px; }
+    pre {
+      background: #1a1a1a; border: 1px solid #2a2a2a;
+      padding: 12px; border-radius: 8px;
+      font-size: 0.8em; overflow-x: auto;
+      max-height: 300px; overflow-y: auto;
+    }
   </style>
 </head>
 <body>
-  <h1>ESP32 Quadcopter Live Data</h1>
-  <p>Connected to: QuadTelemetry / flysafe123</p>
 
-  <div>
-    <button id="toggleBtn" class="off" onclick="toggleDebug()">
-      Serial Debug: OFF
-    </button>
+  <h1>ESP32 Quadcopter</h1>
+  <p class="sub">QuadTelemetry &nbsp;·&nbsp; 192.168.4.1 &nbsp;·&nbsp; <span id="ts">--</span></p>
+
+  <!-- Debug toggle -->
+  <div class="debug-row">
+    <button id="toggleBtn" class="off" onclick="toggleDebug()">Serial Debug: OFF</button>
     <span id="debugStatus"></span>
   </div>
 
-  <pre id="data">Loading...</pre>
+  <div class="grid">
+
+    <!-- ── RC Inputs ───────────────────────────────── -->
+    <div class="card">
+      <h2>RC Inputs</h2>
+
+      <div class="rc-row">
+        <span class="rc-label">Roll</span>
+        <div class="rc-track" id="rc-roll-track">
+          <div class="rc-fill" id="rc-roll-fill"></div>
+          <div class="rc-thumb" id="rc-roll-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-roll-val">--</span>
+      </div>
+
+      <div class="rc-row">
+        <span class="rc-label">Pitch</span>
+        <div class="rc-track" id="rc-pitch-track">
+          <div class="rc-fill" id="rc-pitch-fill"></div>
+          <div class="rc-thumb" id="rc-pitch-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-pitch-val">--</span>
+      </div>
+
+      <div class="rc-row">
+        <span class="rc-label">Yaw</span>
+        <div class="rc-track" id="rc-yaw-track">
+          <div class="rc-fill" id="rc-yaw-fill"></div>
+          <div class="rc-thumb" id="rc-yaw-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-yaw-val">--</span>
+      </div>
+
+      <div class="rc-row">
+        <span class="rc-label">Throttle</span>
+        <div class="rc-track" id="rc-thr-track">
+          <div class="rc-fill unipolar" id="rc-thr-fill"></div>
+          <div class="rc-thumb" id="rc-thr-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-thr-val">--</span>
+      </div>
+
+      <div class="rc-row">
+        <span class="rc-label">Arm (CH5)</span>
+        <div class="rc-track">
+          <div class="rc-fill unipolar" id="rc-arm-fill"></div>
+          <div class="rc-thumb" id="rc-arm-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-arm-val">--</span>
+      </div>
+
+      <div class="rc-row">
+        <span class="rc-label">AltHold (CH6)</span>
+        <div class="rc-track">
+          <div class="rc-fill unipolar" id="rc-aux-fill"></div>
+          <div class="rc-thumb" id="rc-aux-thumb"></div>
+        </div>
+        <span class="rc-value" id="rc-aux-val">--</span>
+      </div>
+    </div>
+
+    <!-- ── Attitude ─────────────────────────────────── -->
+    <div class="card">
+      <h2>Attitude</h2>
+
+      <div class="att-row">
+        <span class="att-label">Roll</span>
+        <div class="att-bar-wrap">
+          <div class="att-fill" id="att-roll-fill"></div>
+          <div class="att-thumb" id="att-roll-thumb"></div>
+        </div>
+        <span class="att-value" id="att-roll-val">--</span>
+      </div>
+
+      <div class="att-row">
+        <span class="att-label">Pitch</span>
+        <div class="att-bar-wrap">
+          <div class="att-fill" id="att-pitch-fill"></div>
+          <div class="att-thumb" id="att-pitch-thumb"></div>
+        </div>
+        <span class="att-value" id="att-pitch-val">--</span>
+      </div>
+
+      <div class="att-row">
+        <span class="att-label">Yaw Rate</span>
+        <div class="att-bar-wrap">
+          <div class="att-fill" id="att-yaw-fill"></div>
+          <div class="att-thumb" id="att-yaw-thumb"></div>
+        </div>
+        <span class="att-value" id="att-yaw-val">--</span>
+      </div>
+
+      <div class="att-row">
+        <span class="att-label">Height</span>
+        <div class="att-bar-wrap">
+          <div class="att-fill" id="att-height-fill" style="background:#0f0;"></div>
+          <div class="att-thumb" id="att-height-thumb" style="background:#0f0; box-shadow:0 0 4px #0f06;"></div>
+        </div>
+        <span class="att-value" id="att-height-val">--</span>
+      </div>
+
+      <div class="att-row">
+        <span class="att-label">Velocity</span>
+        <div class="att-bar-wrap">
+          <div class="att-fill" id="att-vel-fill"></div>
+          <div class="att-thumb" id="att-vel-thumb"></div>
+        </div>
+        <span class="att-value" id="att-vel-val">--</span>
+      </div>
+    </div>
+
+    <!-- ── Status LEDs ──────────────────────────────── -->
+    <div class="card">
+      <h2>Status</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <div class="led" id="led-armed"></div>
+          <span>Armed</span>
+        </div>
+        <div class="status-item">
+          <div class="led" id="led-althold"></div>
+          <span>Alt Hold</span>
+        </div>
+        <div class="status-item">
+          <div class="led" id="led-failsafe"></div>
+          <span>Failsafe</span>
+        </div>
+        <div class="status-item">
+          <div class="led" id="led-lowbat"></div>
+          <span>Low Battery</span>
+        </div>
+        <div class="status-item">
+          <div class="led" id="led-cutoff"></div>
+          <span>Bat Cutoff</span>
+        </div>
+      </div>
+
+      <!-- Gauges -->
+      <div style="margin-top:14px;">
+
+        <div class="gauge-row">
+          <span class="gauge-label">Battery</span>
+          <div class="gauge-track">
+            <div class="gauge-fill green" id="gauge-vbat"></div>
+          </div>
+          <span class="gauge-value" id="val-vbat">--</span>
+        </div>
+
+        <div class="gauge-row">
+          <span class="gauge-label">Alt SP</span>
+          <div class="gauge-track">
+            <div class="gauge-fill cyan" id="gauge-altsp"></div>
+          </div>
+          <span class="gauge-value" id="val-altsp">--</span>
+        </div>
+
+        <div class="gauge-row">
+          <span class="gauge-label">Temp</span>
+          <div class="gauge-track">
+            <div class="gauge-fill yellow" id="gauge-temp"></div>
+          </div>
+          <span class="gauge-value" id="val-temp">--</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Motors ───────────────────────────────────── -->
+    <div class="card">
+      <h2>Motors (µs)</h2>
+      <div class="motor-grid">
+        <div class="motor-col">
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-fill" id="motor-1"></div>
+          </div>
+          <span class="motor-label">M1 FL</span>
+          <span class="motor-value" id="motor-1-val">--</span>
+        </div>
+        <div class="motor-col">
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-fill" id="motor-2"></div>
+          </div>
+          <span class="motor-label">M2 FR</span>
+          <span class="motor-value" id="motor-2-val">--</span>
+        </div>
+        <div class="motor-col">
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-fill" id="motor-3"></div>
+          </div>
+          <span class="motor-label">M3 RR</span>
+          <span class="motor-value" id="motor-3-val">--</span>
+        </div>
+        <div class="motor-col">
+          <div class="motor-bar-wrap">
+            <div class="motor-bar-fill" id="motor-4"></div>
+          </div>
+          <span class="motor-label">M4 RL</span>
+          <span class="motor-value" id="motor-4-val">--</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end grid -->
+
+  <!-- Raw JSON -->
+  <details>
+    <summary>Raw JSON</summary>
+    <pre id="raw">Loading...</pre>
+  </details>
 
   <script>
+    // ── Helpers ──────────────────────────────────────────────
+
+    // Bipolar slider: value in [-range, +range], fills from centre
+    function setBipolar(fillId, thumbId, value, range) {
+      const pct   = Math.max(-1, Math.min(1, value / range));  // -1 to +1
+      const mid   = 50;
+      const halfW = Math.abs(pct) * 50;
+      const fill  = document.getElementById(fillId);
+      const thumb = document.getElementById(thumbId);
+      if (!fill || !thumb) return;
+      if (pct >= 0) {
+        fill.style.left  = mid + '%';
+        fill.style.width = halfW + '%';
+      } else {
+        fill.style.left  = (mid - halfW) + '%';
+        fill.style.width = halfW + '%';
+      }
+      thumb.style.left = (mid + pct * 50) + '%';
+    }
+
+    // Unipolar slider: value in [min, max], fills from left
+    function setUnipolar(fillId, thumbId, value, min, max) {
+      const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      const fill  = document.getElementById(fillId);
+      const thumb = document.getElementById(thumbId);
+      if (!fill || !thumb) return;
+      fill.style.width = (pct * 100) + '%';
+      thumb.style.left = (pct * 100) + '%';
+    }
+
+    // Motor bar: 1000–2000µs → 0–100% height
+    function setMotor(barId, valId, us) {
+      const pct = Math.max(0, Math.min(1, (us - 1000) / 1000));
+      const bar = document.getElementById(barId);
+      const val = document.getElementById(valId);
+      if (bar) bar.style.height = (pct * 100) + '%';
+      if (val) val.textContent = us;
+
+      // Colour: green → yellow → red as throttle rises
+      if (pct < 0.5)       bar.style.background = '#0f0';
+      else if (pct < 0.75) bar.style.background = '#ff0';
+      else                  bar.style.background = '#f80';
+    }
+
+    // Gauge: value in [min, max] → width %, colour thresholds optional
+    function setGauge(gaugeId, valId, value, min, max, unit, threshYellow, threshRed) {
+      const pct = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      const el  = document.getElementById(gaugeId);
+      const vel = document.getElementById(valId);
+      if (el) {
+        el.style.width = (pct * 100) + '%';
+        if (threshRed !== undefined && value <= threshRed)
+          el.className = 'gauge-fill red';
+        else if (threshYellow !== undefined && value <= threshYellow)
+          el.className = 'gauge-fill yellow';
+        else
+          el.className = el.className.replace(/\b(red|yellow)\b/g, '').trim();
+      }
+      if (vel) vel.textContent = value.toFixed(2) + (unit || '');
+    }
+
+    function setLed(id, on, colour) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'led' + (on ? ' on-' + colour : '');
+    }
+
+    // ── Debug toggle ─────────────────────────────────────────
     let debugOn = false;
 
-    // Sync button state with current server state on load
     fetch('/debug')
       .then(r => r.json())
       .then(d => setDebugState(d.debug));
@@ -1019,27 +1517,78 @@ void handleRoot() {
 
     function setDebugState(state) {
       debugOn = state;
-      const btn = document.getElementById('toggleBtn');
+      const btn    = document.getElementById('toggleBtn');
       const status = document.getElementById('debugStatus');
-      if (state) {
-        btn.textContent = 'Serial Debug: ON';
-        btn.className = 'on';
-        status.textContent = 'Printing to Serial Monitor every 250ms';
-      } else {
-        btn.textContent = 'Serial Debug: OFF';
-        btn.className = 'off';
-        status.textContent = '';
-      }
+      btn.textContent = 'Serial Debug: ' + (state ? 'ON' : 'OFF');
+      btn.className   = state ? 'on' : 'off';
+      status.textContent = state ? 'Printing every 250ms' : '';
     }
 
-    // Telemetry poll
+    // ── Telemetry poll ───────────────────────────────────────
     setInterval(() => {
       fetch('/data')
         .then(r => r.json())
         .then(d => {
-          document.getElementById('data').innerText = JSON.stringify(d, null, 2);
+          // Timestamp
+          document.getElementById('ts').textContent =
+            new Date().toLocaleTimeString();
+
+          // ── RC inputs ──
+          setBipolar ('rc-roll-fill',  'rc-roll-thumb',  d.rcRoll  - 1500, 500);
+          setBipolar ('rc-pitch-fill', 'rc-pitch-thumb', d.rcPitch - 1500, 500);
+          setBipolar ('rc-yaw-fill',   'rc-yaw-thumb',   d.rcYaw   - 1500, 500);
+          setUnipolar('rc-thr-fill',   'rc-thr-thumb',   d.rcThrottle, 1000, 2000);
+          setUnipolar('rc-arm-fill',   'rc-arm-thumb',   d.rcArm,  1000, 2000);
+          setUnipolar('rc-aux-fill',   'rc-aux-thumb',   d.rcAux,  1000, 2000);
+
+          document.getElementById('rc-roll-val').textContent  = d.rcRoll;
+          document.getElementById('rc-pitch-val').textContent = d.rcPitch;
+          document.getElementById('rc-yaw-val').textContent   = d.rcYaw;
+          document.getElementById('rc-thr-val').textContent   = d.rcThrottle;
+          document.getElementById('rc-arm-val').textContent   = d.rcArm;
+          document.getElementById('rc-aux-val').textContent   = d.rcAux;
+
+          // ── Attitude ──
+          // Roll ±45°, Pitch ±45°, YawRate ±220°/s, Height 0–3m, Velocity ±2m/s
+          setBipolar ('att-roll-fill',   'att-roll-thumb',   d.roll,     45);
+          setBipolar ('att-pitch-fill',  'att-pitch-thumb',  d.pitch,    45);
+          setBipolar ('att-yaw-fill',    'att-yaw-thumb',    d.yawRate, 220);
+          setUnipolar('att-height-fill', 'att-height-thumb', d.height,   0,  3);
+          setBipolar ('att-vel-fill',    'att-vel-thumb',    d.velocity, 2);
+
+          document.getElementById('att-roll-val').textContent   = d.roll.toFixed(1)    + '°';
+          document.getElementById('att-pitch-val').textContent  = d.pitch.toFixed(1)   + '°';
+          document.getElementById('att-yaw-val').textContent    = d.yawRate.toFixed(1) + '°/s';
+          document.getElementById('att-height-val').textContent = d.height.toFixed(2)  + 'm';
+          document.getElementById('att-vel-val').textContent    = d.velocity.toFixed(2)+ 'm/s';
+
+          // ── Status LEDs ──
+          setLed('led-armed',    d.armed,                         'green');
+          setLed('led-althold',  d.altitudeHoldEnabled,           'blue');
+          setLed('led-failsafe', d.armed === false && !d.armed,   'yellow'); // from JSON field if added
+          setLed('led-lowbat',   d.vbat < 10.2 && d.vbat > 9.3,  'yellow');
+          setLed('led-cutoff',   d.vbat <= 9.3,                   'red');
+
+          // ── Gauges ──
+          // Battery 9.0–12.6V, warn at 10.2, cutoff at 9.3
+          setGauge('gauge-vbat',  'val-vbat',  d.vbat,        9.0, 12.6, 'V',  10.2, 9.3);
+          setGauge('gauge-altsp', 'val-altsp', d.altSetpoint || 0, 0, 3, 'm');
+          setGauge('gauge-temp',  'val-temp',  d.temperature, 10,  60,  '°C', null, null);
+
+          // ── Motors ──
+          setMotor('motor-1', 'motor-1-val', d.m1 || 1000);
+          setMotor('motor-2', 'motor-2-val', d.m2 || 1000);
+          setMotor('motor-3', 'motor-3-val', d.m3 || 1000);
+          setMotor('motor-4', 'motor-4-val', d.m4 || 1000);
+
+          // ── Raw JSON ──
+          document.getElementById('raw').textContent =
+            JSON.stringify(d, null, 2);
+        })
+        .catch(() => {
+          document.getElementById('ts').textContent = 'reconnecting...';
         });
-    }, 1000);
+    }, 100);  // 100ms poll — smooth slider updates
   </script>
 </body>
 </html>
