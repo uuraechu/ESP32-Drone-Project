@@ -79,9 +79,9 @@ double yawRateSetpoint = 0, yawRateInput, yawRateOutput;
 double altSetpoint = 0.5;
 double altInput, altOutput;
 
-PID pidRoll (&rollInput, &rollOutput, &rollSetpoint, 2.5, 0.02, 0.8, DIRECT);
-PID pidPitch (&pitchInput, &pitchOutput, &pitchSetpoint, 2.5, 0.02, 0.8, DIRECT);
-PID pidYawRate (&yawRateInput, &yawRateOutput, &yawRateSetpoint, 3.5, 0.02, 0.1, DIRECT);
+PID pidRoll (&rollInput, &rollOutput, &rollSetpoint, 2, 0.02, 0.6, DIRECT);
+PID pidPitch (&pitchInput, &pitchOutput, &pitchSetpoint, 2, 0.02, 0.6, DIRECT);
+PID pidYawRate (&yawRateInput, &yawRateOutput, &yawRateSetpoint, 2.5, 0.02, 0.8, DIRECT);
 PID pidAlt (&altInput, &altOutput, &altSetpoint, 2.0, 0.15, 1.0, DIRECT);
 double originalAltKi = 0;
 
@@ -948,10 +948,10 @@ void mixAndWriteMotors() {
 
   // Positive yawRateOutput increases CW motors (FL, RR) →
   // net CCW reaction torque → drone yaws right-to-left ✓
-  float m1_raw = throttle - rollOutput + pitchOutput + yawRateOutput; // FL CW
-  float m2_raw = throttle + rollOutput + pitchOutput - yawRateOutput; // FR CCW
-  float m3_raw = throttle + rollOutput - pitchOutput + yawRateOutput; // RR CW
-  float m4_raw = throttle - rollOutput - pitchOutput - yawRateOutput; // RL CCW
+  float m1_raw = throttle + rollOutput + pitchOutput + yawRateOutput; // FL CW
+  float m2_raw = throttle - rollOutput + pitchOutput - yawRateOutput; // FR CCW
+  float m3_raw = throttle - rollOutput - pitchOutput + yawRateOutput; // RR CW
+  float m4_raw = throttle + rollOutput - pitchOutput - yawRateOutput; // RL CCW
 
   float m1_scaled = motorMin[0] + (m1_raw - 1000.0f) * motorScale[0];
   float m2_scaled = motorMin[1] + (m2_raw - 1000.0f) * motorScale[1];
