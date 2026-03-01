@@ -224,6 +224,11 @@ void loop() {
   updateBuzzer();
 
   if (!armed) {
+    static unsigned long lastReEstimate = 0;
+    if (millis() - lastReEstimate >= 500) {
+      reEstimateAttitude();
+      lastReEstimate = millis();
+    }
     stopMotors();
     updateLEDs();
     return;
@@ -614,7 +619,7 @@ BootOrientation checkBootOrientation(float &initialPitch, float &initialRoll) {
 }
 
 void reEstimateAttitude() {
-  const int numSamples = 20;  // ~6.3ms at 400kHz I2C — acceptable at disarm
+  const int numSamples = 20; // ~6.3ms at 400kHz I2C — acceptable at disarm
   float sumAx = 0, sumAy = 0, sumAz = 0;
 
   for (int i = 0; i < numSamples; i++) {
@@ -631,7 +636,7 @@ void reEstimateAttitude() {
 
   // Same formula as readSensors() and checkBootOrientation()
   float newPitch = atan2f(ay, az) * GYRO_SCALE;
-  float newRoll  = -atan2f(ax, sqrtf(ay * ay + az * az)) * GYRO_SCALE;
+  float newRoll = -atan2f(ax, sqrtf(ay * ay + az * az)) * GYRO_SCALE;
 
   // Only reseed if drone is reasonably level — if it disarmed mid-flip
   // or landed on its side the accel reading is valid but seeding a
@@ -639,9 +644,8 @@ void reEstimateAttitude() {
   float tilt = sqrtf(newPitch * newPitch + newRoll * newRoll);
   if (tilt < 60.0f) {
     pitch = newPitch;
-    roll  = newRoll;
-    Serial.printf("Attitude re-estimated at disarm — Pitch: %.2f°  Roll: %.2f°\n",
-                  pitch, roll);
+    roll = newRoll;
+    Serial.printf("Attitude re-estimated — Pitch: %.2f°  Roll: %.2f°\n", pitch, roll);
   } else {
     Serial.printf("Disarm re-estimate skipped — tilt too large (%.1f°)\n", tilt);
   }
