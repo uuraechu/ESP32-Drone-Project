@@ -17,11 +17,11 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 
-#define GRAVITY_CON  9.81f
-#define BUZZER_PIN   13
-#define NUM_SAMPLES  500    // per run — higher = more accurate average
-#define NUM_RUNS     3      // runs to average — catches thermal drift
-#define SAMPLE_DELAY 5      // ms between samples
+#define GRAVITY_CON 9.81f
+#define BUZZER_PIN 13
+#define NUM_SAMPLES 500 // per run — higher = more accurate average
+#define NUM_RUNS 3 // runs to average — catches thermal drift
+#define SAMPLE_DELAY 5 // ms between samples
 
 Adafruit_MPU6050 mpu;
 
@@ -126,7 +126,7 @@ void setup() {
     // Beep between runs
     if (run < NUM_RUNS - 1) {
       tone(BUZZER_PIN, 1500, 150);
-      delay(2000);  // pause between runs
+      delay(2000); // pause between runs
     }
   }
 
@@ -155,7 +155,7 @@ void setup() {
   Serial.println("  Consistency check (max deviation across runs)");
   Serial.println("==============================================");
 
-  float maxGyroDeviation  = 0;
+  float maxGyroDeviation = 0;
   float maxAccelDeviation = 0;
 
   for (int i = 0; i < NUM_RUNS; i++) {
@@ -170,8 +170,8 @@ void setup() {
               fabsf(runs[i].az - avgAz)));
   }
 
-  bool gyroOk  = maxGyroDeviation  < 0.002f;  // < 2 mrad/s across runs
-  bool accelOk = maxAccelDeviation < 0.05f;   // < 50 mm/s² across runs
+  bool gyroOk = maxGyroDeviation < 0.002f; // < 2 mrad/s across runs
+  bool accelOk = maxAccelDeviation < 0.05f; // < 50 mm/s² across runs
 
   Serial.printf("  Gyro  max deviation: %.6f rad/s  %s\n",
                 maxGyroDeviation,  gyroOk  ? "[PASS]" : "[WARN — drone may have moved]");

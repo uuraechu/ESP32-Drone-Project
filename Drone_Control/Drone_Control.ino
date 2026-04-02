@@ -63,7 +63,7 @@
 // Compensates for fixed mechanical offsets (battery position etc.)
 // Adjust PITCH_TRIM in 0.5° steps until hover is level.
 // Positive PITCH_TRIM = nose-up correction (forward battery)
-#define PITCH_TRIM 2.0f // degrees
+#define PITCH_TRIM 0.0f // degrees
 #define ROLL_TRIM 0.0f // degrees
 
 // ────────────────────────────────────────────────────────────────
@@ -79,9 +79,9 @@ double yawRateSetpoint = 0, yawRateInput, yawRateOutput;
 double altSetpoint = 0.5;
 double altInput, altOutput;
 
-PID pidRoll (&rollInput, &rollOutput, &rollSetpoint, 2, 0.02, 0.6, DIRECT);
-PID pidPitch (&pitchInput, &pitchOutput, &pitchSetpoint, 2, 0.02, 0.6, DIRECT);
-PID pidYawRate (&yawRateInput, &yawRateOutput, &yawRateSetpoint, 2.5, 0.02, 0.8, DIRECT);
+PID pidRoll (&rollInput, &rollOutput, &rollSetpoint, 1.0, 0.0, 0.0, DIRECT);
+PID pidPitch (&pitchInput, &pitchOutput, &pitchSetpoint, 1.0, 0.0, 0.0, DIRECT);
+PID pidYawRate (&yawRateInput, &yawRateOutput, &yawRateSetpoint, 1.5, 0.0, 0.0, DIRECT);
 PID pidAlt (&altInput, &altOutput, &altSetpoint, 2.0, 0.15, 1.0, DIRECT);
 double originalAltKi = 0;
 
@@ -647,7 +647,7 @@ void reEstimateAttitude() {
     roll = newRoll;
     Serial.printf("Attitude re-estimated — Pitch: %.2f°  Roll: %.2f°\n", pitch, roll);
   } else {
-    Serial.printf("Disarm re-estimate skipped — tilt too large (%.1f°)\n", tilt);
+    Serial.printf("Disarm re-estimate skipped — tilt too large (%.1f°) [Pitch: %.2f°  Roll: %.2f°]\n", tilt, pitch, roll);
   }
 }
 
